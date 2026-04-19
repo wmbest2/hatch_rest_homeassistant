@@ -83,23 +83,17 @@ class HatchBabyRestLight(HatchBabyRestEntity, LightEntity):  # pyright: ignore[r
             _LOGGER.debug("light _hatch_rest_device power not on -- turning on")
             await self._hatch_rest_device.turn_power_on()
 
-        if brightness:
-            _LOGGER.debug("light setting brightness = %s", brightness)
-            await self._hatch_rest_device.set_brightness(brightness)
-        if rgb:
-            _LOGGER.debug("light setting RBG = (%s[0], %s[1], %s[2])", *rgb)
-            await self._hatch_rest_device.set_color(*rgb)
+        if brightness is not None or rgb is not None:
+            _LOGGER.debug("light setting state: brightness=%s, rgb=%s", brightness, rgb)
+            await self._hatch_rest_device.set_light_state(brightness=brightness, color=rgb)
 
-        # https://developers.home-assistant.io/docs/integration_fetching_data/
-        # If this method is used on a coordinator that polls, it will reset the time until the next time it will poll for data.
-        # each _send_command calls _refresh_data and updates API data states, so use that
+        # The API now performs optimistic updates to self._hatch_rest_device
+        # We trigger a coordinator refresh to ensure Home Assistant sees the new state immediately
         self.coordinator.async_set_updated_data(self.coordinator.get_current_data())
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Set the light off."""
         await self._hatch_rest_device.set_brightness(0)
 
-        # https://developers.home-assistant.io/docs/integration_fetching_data/
-        # If this method is used on a coordinator that polls, it will reset the time until the next time it will poll for data.
-        # each _send_command calls _refresh_data and updates API data states, so use that
+        # The API now performs optimistic updates to self._hatch_rest_device
         self.coordinator.async_set_updated_data(self.coordinator.get_current_data())

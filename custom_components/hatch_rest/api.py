@@ -45,6 +45,7 @@ class PyHatchBabyRestAsync:
         # connection synchronization primitizes / state
         self._connection_cv = asyncio.Condition()
         self._connecting: bool = False
+        self._disconnect_timer: asyncio.TimerHandle | None = None
 
         # cached device state
         self.color: tuple[int, int, int] | None = None
@@ -67,9 +68,16 @@ class PyHatchBabyRestAsync:
         """Callback for when the client disconnects."""
         _LOGGER.debug("API client has successfully disconnected")
         self._client = None
+        if self._disconnect_timer:
+            self._disconnect_timer.cancel()
+            self._disconnect_timer = None
 
     async def _client_connect(self) -> None:
         """Connect to the device."""
+        if self._disconnect_timer:
+            self._disconnect_timer.cancel()
+            self._disconnect_timer = None
+
         async with self._connection_cv:
             if self._client and self._client.is_connected:
                 _LOGGER.debug(
@@ -114,13 +122,25 @@ class PyHatchBabyRestAsync:
             self._client = client
             self._connection_cv.notify_all()
 
+    def _schedule_disconnect(self) -> None:
+        """Schedule a disconnection after a cooldown period."""
+        if self._disconnect_timer:
+            self._disconnect_timer.cancel()
+
+        self._disconnect_timer = asyncio.get_event_loop().call_later(
+            10, lambda: asyncio.create_task(self._client_disconnect())
+        )
+        _LOGGER.debug("Scheduled disconnect in 10 seconds")
+
     async def _client_disconnect(self) -> None:
         """Disconnect from the device."""
+        if self._disconnect_timer:
+            self._disconnect_timer.cancel()
+            self._disconnect_timer = None
+
         if self._client and self._active_operations == 0:
-            # if self._client:
             _LOGGER.debug(
                 "self._client = %s and self._running_tasks = %d, attempting to disconnect",
-                # "self._client = %s, attempting to disconnect",
                 self._client,
                 self._active_operations,
             )
@@ -138,7 +158,6 @@ class PyHatchBabyRestAsync:
         else:
             _LOGGER.debug(
                 "self._client = %s and self._running_tasks = %d, cannot currently disconnect",
-                # "self._client = %s, cannot currently disconnect",
                 self._client,
                 self._active_operations,
             )
@@ -172,9 +191,7 @@ class PyHatchBabyRestAsync:
             _LOGGER.warning("Exception during _send_command -- %r", e)
 
         self._set_active_operations(-1)
-        # seemingly need some time for Hatch Rest to "catch up"
-        await asyncio.sleep(1)
-        await self.refresh_data()
+        self._schedule_disconnect()
 
         if log_timing:
             _LOGGER.debug(
@@ -231,7 +248,7 @@ class PyHatchBabyRestAsync:
             _LOGGER.warning("Exception during refresh_data -- %r", e)
 
         self._set_active_operations(-1)
-        await self._client_disconnect()
+        self._schedule_disconnect()
 
         if log_timing:
             _LOGGER.debug(
@@ -244,38 +261,54 @@ class PyHatchBabyRestAsync:
         """Power on the Hatch Rest device."""
         command = f"SI{1:02x}"
         _LOGGER.debug("API command: turn_power_on")
+        self.power = True
         await self._send_command(command)
 
     async def turn_power_off(self):
         """Power off the Hatch Rest device."""
         command = f"SI{0:02x}"
         _LOGGER.debug("API command: turn_power_off")
+        self.power = False
         await self._send_command(command)
 
     async def set_sound(self, sound: int):
         """Set the sound of the Hatch Rest device."""
         command = f"SN{sound:02x}"
         _LOGGER.debug("API command: set_sound to %s", command)
+        self.sound = PyHatchBabyRestSound(sound)
         return await self._send_command(command)
 
     async def set_volume(self, volume: int):
         """Set the volume of the Hatch Rest device."""
         command = f"SV{volume:02x}"
         _LOGGER.debug("API command: set_volume to %s", command)
+        self.volume = volume
         return await self._send_command(command)
 
     async def set_color(self, red: int, green: int, blue: int):
         """Set the color of the Hatch Rest device."""
-        command = f"SC{red:02x}{green:02x}{blue:02x}{self.brightness:02x}"
-        _LOGGER.debug("API command: set_color to %s", command)
-        return await self._send_command(command)
+        return await self.set_light_state(color=(red, green, blue))
 
     async def set_brightness(self, brightness: int):
         """Set the brightness of the Hatch Rest device."""
-        if self.color:
-            command = f"SC{self.color[0]:02x}{self.color[1]:02x}{self.color[2]:02x}{brightness:02x}"
-        _LOGGER.debug("API command: set_brightness to %s", command)
-        return await self._send_command(command)
+        return await self.set_light_state(brightness=brightness)
+
+    async def set_light_state(
+        self,
+        brightness: int | None = None,
+        color: tuple[int, int, int] | None = None,
+    ):
+        """Set the light state (color and brightness) in one command."""
+        if brightness is not None:
+            self.brightness = brightness
+        if color is not None:
+            self.color = color
+
+        if self.color is not None and self.brightness is not None:
+            command = f"SC{self.color[0]:02x}{self.color[1]:02x}{self.color[2]:02x}{self.brightness:02x}"
+            _LOGGER.debug("API command: set_light_state to %s", command)
+            return await self._send_command(command)
+        return None
 
     @property
     def name(self):
