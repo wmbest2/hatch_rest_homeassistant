@@ -79,21 +79,26 @@ class HatchBabyRestLight(HatchBabyRestEntity, LightEntity):  # pyright: ignore[r
         brightness = kwargs.get(ATTR_BRIGHTNESS)
         rgb = kwargs.get(ATTR_RGB_COLOR)
 
+        # If the whole device is powered off, we must turn it on to see the light
         if not self._hatch_rest_device.power:
-            _LOGGER.debug("light _hatch_rest_device power not on -- turning on")
+            _LOGGER.debug("light turning device power on")
             await self._hatch_rest_device.turn_power_on()
 
+        # If we have specific attributes (color/brightness), apply them
         if brightness is not None or rgb is not None:
             _LOGGER.debug("light setting state: brightness=%s, rgb=%s", brightness, rgb)
             await self._hatch_rest_device.set_light_state(brightness=brightness, color=rgb)
+        
+        # If we are just toggling "On" and the current brightness is 0, we need to bring it up
+        elif self._hatch_rest_device.brightness == 0:
+            _LOGGER.debug("light was at 0 brightness, restoring to full")
+            await self._hatch_rest_device.set_brightness(255)
 
-        # The API now performs optimistic updates to self._hatch_rest_device
-        # We trigger a coordinator refresh to ensure Home Assistant sees the new state immediately
         self.coordinator.async_set_updated_data(self.coordinator.get_current_data())
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Set the light off."""
+        _LOGGER.debug("light dimming to 0 (off)")
         await self._hatch_rest_device.set_brightness(0)
 
-        # The API now performs optimistic updates to self._hatch_rest_device
         self.coordinator.async_set_updated_data(self.coordinator.get_current_data())

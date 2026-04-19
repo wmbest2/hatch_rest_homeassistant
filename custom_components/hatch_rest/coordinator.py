@@ -3,7 +3,8 @@
 from datetime import timedelta
 import logging
 
-from homeassistant.core import HomeAssistant
+from homeassistant.components import bluetooth
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import (
@@ -39,6 +40,40 @@ class HatchBabyRestUpdateCoordinator(DataUpdateCoordinator):
         self._last_data: dict[
             str, int | tuple[int, int, int] | bool | PyHatchBabyRestSound | None
         ] = {}
+
+        # Register callback for real-time updates from connections
+        self.hatch_rest_device.register_callback(self._handle_api_update)
+
+        # Register callback for passive advertisements
+        self._async_setup_advertisement_callback()
+
+    @callback
+    def _async_setup_advertisement_callback(self) -> None:
+        """Set up the advertisement callback."""
+        self.async_add_listener(
+            bluetooth.async_register_callback(
+                self.hass,
+                self._handle_advertisement,
+                {"address": self.hatch_rest_device.address, "connectable": True},
+                bluetooth.BluetoothScanningMode.PASSIVE,
+            )
+        )
+
+    @callback
+    def _handle_advertisement(
+        self,
+        service_info: bluetooth.BluetoothServiceInfoBleak,
+        change: bluetooth.BluetoothChange,
+    ) -> None:
+        """Handle an advertisement from the device."""
+        _LOGGER.debug("Received advertisement for %s", service_info.address)
+        self.hatch_rest_device.update_from_advertisement(service_info)
+        # Note: update_from_advertisement will trigger the API callback if state changed
+
+    def _handle_api_update(self) -> None:
+        """Handle pushed updates from the API."""
+        _LOGGER.debug("API pushed an update, updating coordinator data")
+        self.async_set_updated_data(self.get_current_data())
 
     def get_current_data(
         self,

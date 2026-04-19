@@ -6,6 +6,7 @@ https://github.com/kjoconnor/pyhatchbabyrest/blob/master/LICENSE
 
 """
 
+from collections.abc import Callable
 import asyncio
 from datetime import datetime
 import logging
@@ -46,6 +47,8 @@ class PyHatchBabyRestAsync:
         self._connection_cv = asyncio.Condition()
         self._connecting: bool = False
         self._disconnect_timer: asyncio.TimerHandle | None = None
+        self._callbacks: set[Callable[[], None]] = set()
+        self._is_notifying: bool = False
 
         # cached device state
         self.color: tuple[int, int, int] | None = None
@@ -53,6 +56,39 @@ class PyHatchBabyRestAsync:
         self.sound: PyHatchBabyRestSound | None = None
         self.volume: int | None = None
         self.power: bool | None = None
+
+    def update_ble_device(self, ble_device: BLEDevice) -> None:
+        """Update the BLE device."""
+        self.device = ble_device
+        self.address = ble_device.address
+
+    def update_from_advertisement(self, service_info: "BluetoothServiceInfoBleak") -> None:
+        """Update state from advertisement data."""
+        from .const import MANUFACTURER_ID
+
+        if MANUFACTURER_ID not in service_info.manufacturer_data:
+            return
+
+        data = service_info.manufacturer_data[MANUFACTURER_ID]
+        _LOGGER.debug("Received advertisement data: %s", data.hex())
+
+        # The advertisement data format for Hatch Rest varies, but some versions
+        # include status bytes. If yours does, we can parse it here.
+        # For now, we update the BLEDevice so the next connection is faster.
+        self.update_ble_device(service_info.device)
+
+    def register_callback(self, callback: Callable[[], None]) -> None:
+        """Register a callback for when data is updated."""
+        self._callbacks.add(callback)
+
+    def remove_callback(self, callback: Callable[[], None]) -> None:
+        """Remove a previously registered callback."""
+        self._callbacks.discard(callback)
+
+    def _notify_callbacks(self) -> None:
+        """Notify all registered callbacks of an update."""
+        for callback in self._callbacks:
+            callback()
 
     def _set_active_operations(self, amount: int):
         """Change the number of running tasks."""
@@ -68,6 +104,7 @@ class PyHatchBabyRestAsync:
         """Callback for when the client disconnects."""
         _LOGGER.debug("API client has successfully disconnected")
         self._client = None
+        self._is_notifying = False
         if self._disconnect_timer:
             self._disconnect_timer.cancel()
             self._disconnect_timer = None
@@ -102,10 +139,19 @@ class PyHatchBabyRestAsync:
             client = await establish_connection(
                 BleakClientWithServiceCache,
                 self.device,
-                self.device.address,
+                self.address,
                 disconnected_callback=self._client_disconnected,
             )
             _LOGGER.debug("Client connected: %s", client.is_connected)
+
+            # Start notifications if supported
+            if client.is_connected and not self._is_notifying:
+                try:
+                    _LOGGER.debug("Starting notifications on %s", CHAR_FEEDBACK)
+                    await client.start_notify(CHAR_FEEDBACK, self._notification_handler)
+                    self._is_notifying = True
+                except Exception as e:
+                    _LOGGER.warning("Could not start notifications: %r", e)
 
         except (
             BleakNotFoundError,
@@ -175,11 +221,14 @@ class PyHatchBabyRestAsync:
         await self._client_connect()
 
         try:
-            await self._client.write_gatt_char(  # pyright: ignore[reportOptionalMemberAccess]
-                char_specifier=CHAR_TX,
-                data=bytearray(command, "utf-8"),
-                response=True,
-            )
+            if self._client and self._client.is_connected:
+                await self._client.write_gatt_char(
+                    char_specifier=CHAR_TX,
+                    data=bytearray(command, "utf-8"),
+                    response=True,
+                )
+            else:
+                _LOGGER.warning("Could not send command: Not connected to device")
 
         except (
             BleakNotFoundError,
@@ -200,6 +249,58 @@ class PyHatchBabyRestAsync:
                 monotonic() - start,  # pyright: ignore[reportPossiblyUnboundVariable]
             )
 
+    def _notification_handler(self, characteristic: int, data: bytearray) -> None:
+        """Handle incoming notifications from the device."""
+        # _parse_data already handles the logic and "CHANGED" logging
+        self._parse_data(data)
+        self._notify_callbacks()
+
+    def _parse_data(self, data: bytearray) -> None:
+        """Parse raw device data and update state."""
+        response = [hex(x) for x in data]
+
+        # Make sure the data is where we think it is
+        try:
+            _assert_value(response, 5, "0x43")  # color
+            _assert_value(response, 10, "0x53")  # audio
+            _assert_value(response, 13, "0x50")  # power
+
+            red, green, blue, brightness = [int(x, 16) for x in response[6:10]]
+            sound = PyHatchBabyRestSound(int(response[11], 16))
+            volume = int(response[12], 16)
+            power = not bool(int("11000000", 2) & int(response[14], 16))
+
+            new_color = (red, green, blue)
+
+            # Check if anything has actually changed
+            if (
+                new_color == self.color
+                and brightness == self.brightness
+                and sound == self.sound
+                and volume == self.volume
+                and power == self.power
+            ):
+                _LOGGER.debug("State unchanged, skipping callback")
+                return
+
+            self.color = new_color
+            self.brightness = brightness
+            self.sound = sound
+            self.volume = volume
+            self.power = power
+
+            _LOGGER.debug(
+                "Parsed state (CHANGED): power=%s, brightness=%s, color=%s, sound=%s, volume=%s",
+                self.power,
+                self.brightness,
+                self.color,
+                self.sound,
+                self.volume,
+            )
+            self._notify_callbacks()
+        except (ValueError, IndexError) as e:
+            _LOGGER.warning("Failed to parse device data: %r", e)
+
     async def refresh_data(self):
         """Refresh data from Hatch Rest device."""
         if log_timing := _LOGGER.isEnabledFor(logging.DEBUG):
@@ -210,33 +311,12 @@ class PyHatchBabyRestAsync:
         await self._client_connect()
 
         try:
-            raw_char_read = await self._client.read_gatt_char(CHAR_FEEDBACK)  # pyright: ignore[reportOptionalMemberAccess]
-            _LOGGER.debug("Raw char read from refresh_data: %s", raw_char_read)
-
-            response = [hex(x) for x in raw_char_read]
-
-            # Make sure the data is where we think it is
-            _assert_value(response, 5, "0x43")  # color
-            _assert_value(response, 10, "0x53")  # audio
-            _assert_value(response, 13, "0x50")  # power
-
-            red, green, blue, brightness = [int(x, 16) for x in response[6:10]]
-
-            sound = PyHatchBabyRestSound(int(response[11], 16))
-            volume = int(response[12], 16)
-
-            power = not bool(int("11000000", 2) & int(response[14], 16))
-
-            self.color = (red, green, blue)
-            _LOGGER.debug("refresh_data color: %s", self.color)
-            self.brightness = brightness
-            _LOGGER.debug("refresh_data brightness: %s", self.brightness)
-            self.sound = sound
-            _LOGGER.debug("refresh_data sound: %s", self.sound)
-            self.volume = volume
-            _LOGGER.debug("refresh_data volume: %s", self.volume)
-            self.power = power
-            _LOGGER.debug("refresh_data power: %s", self.power)
+            if self._client and self._client.is_connected:
+                raw_char_read = await self._client.read_gatt_char(CHAR_FEEDBACK)
+                _LOGGER.debug("Raw char read from refresh_data: %s", raw_char_read)
+                self._parse_data(raw_char_read)
+            else:
+                _LOGGER.warning("Could not refresh data: Not connected to device")
 
         except (
             BleakNotFoundError,
@@ -256,6 +336,7 @@ class PyHatchBabyRestAsync:
                 datetime.now().isoformat(),
                 monotonic() - start,  # pyright: ignore[reportPossiblyUnboundVariable]
             )
+
 
     async def turn_power_on(self):
         """Power on the Hatch Rest device."""

@@ -32,6 +32,11 @@ async def async_setup_entry(
     )
     entry.runtime_data = coordinator
 
+    # Register a callback to remove the coordinator listener on unload
+    entry.async_on_unload(
+        lambda: hatch_rest_device.remove_callback(coordinator._handle_api_update)
+    )
+
     # Fetch initial data so we have data when entities subscribe
     #
     # If the refresh fails, async_config_entry_first_refresh will
