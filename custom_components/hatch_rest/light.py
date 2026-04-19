@@ -5,8 +5,10 @@ from typing import Any
 
 from homeassistant.components.light import (
     ATTR_BRIGHTNESS,
+    ATTR_EFFECT,
     ATTR_RGB_COLOR,
     LightEntity,
+    LightEntityFeature,
 )
 from homeassistant.components.light.const import ColorMode
 from homeassistant.config_entries import ConfigEntry
@@ -14,8 +16,11 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .coordinator import HatchBabyRestEntity
+from .const import COLOR_GRADIENT
 
 _LOGGER = logging.getLogger(__name__)
+
+EFFECT_RAINBOW = "Rainbow"
 
 
 async def async_setup_entry(
@@ -31,6 +36,9 @@ async def async_setup_entry(
 
 class HatchBabyRestLight(HatchBabyRestEntity, LightEntity):  # pyright: ignore[reportIncompatibleVariableOverride]
     """Hatch Rest light entity."""
+
+    _attr_effect_list = [EFFECT_RAINBOW]
+    _attr_supported_features = LightEntityFeature.EFFECT
 
     @property
     def brightness(self) -> int | None:  # pyright: ignore[reportIncompatibleVariableOverride]
@@ -74,10 +82,22 @@ class HatchBabyRestLight(HatchBabyRestEntity, LightEntity):  # pyright: ignore[r
         """Return supported color modes."""
         return {ColorMode.RGB}
 
+    @property
+    def effect(self) -> str | None:
+        """Return the current effect."""
+        if self.coordinator.data.get("color") == COLOR_GRADIENT:
+            return EFFECT_RAINBOW
+        return None
+
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Set the light on."""
         brightness = kwargs.get(ATTR_BRIGHTNESS)
         rgb = kwargs.get(ATTR_RGB_COLOR)
+        effect = kwargs.get(ATTR_EFFECT)
+
+        # If the rainbow effect is requested, override the color
+        if effect == EFFECT_RAINBOW:
+            rgb = COLOR_GRADIENT
 
         # If the whole device is powered off, we must turn it on to see the light
         if not self._hatch_rest_device.power:
