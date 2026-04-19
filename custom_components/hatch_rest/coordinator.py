@@ -45,18 +45,12 @@ class HatchBabyRestUpdateCoordinator(DataUpdateCoordinator):
         self.hatch_rest_device.register_callback(self._handle_api_update)
 
         # Register callback for passive advertisements
-        self._async_setup_advertisement_callback()
-
-    @callback
-    def _async_setup_advertisement_callback(self) -> None:
-        """Set up the advertisement callback."""
-        self.async_add_listener(
-            bluetooth.async_register_callback(
-                self.hass,
-                self._handle_advertisement,
-                {"address": self.hatch_rest_device.address, "connectable": True},
-                bluetooth.BluetoothScanningMode.PASSIVE,
-            )
+        self._address = self.hatch_rest_device.address.upper()
+        self._cancel_bluetooth_advertisements = bluetooth.async_register_callback(
+            self.hass,
+            self._handle_advertisement,
+            {"address": self._address, "connectable": True},
+            bluetooth.BluetoothScanningMode.PASSIVE,
         )
 
     @callback

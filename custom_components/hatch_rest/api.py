@@ -72,10 +72,11 @@ class PyHatchBabyRestAsync:
         data = service_info.manufacturer_data[MANUFACTURER_ID]
         _LOGGER.debug("Received advertisement data: %s", data.hex())
 
-        # The advertisement data format for Hatch Rest varies, but some versions
-        # include status bytes. If yours does, we can parse it here.
-        # For now, we update the BLEDevice so the next connection is faster.
+        # Update the BLEDevice so the next connection is faster
         self.update_ble_device(service_info.device)
+
+        # Parse the advertisement data (it uses the same tagged format)
+        self._parse_data(data)
 
     def register_callback(self, callback: Callable[[], None]) -> None:
         """Register a callback for when data is updated."""
@@ -256,38 +257,49 @@ class PyHatchBabyRestAsync:
         self._notify_callbacks()
 
     def _parse_data(self, data: bytearray) -> None:
-        """Parse raw device data and update state."""
-        response = [hex(x) for x in data]
-
-        # Make sure the data is where we think it is
+        """Parse raw device data and update state using markers."""
         try:
-            _assert_value(response, 5, "0x43")  # color
-            _assert_value(response, 10, "0x53")  # audio
-            _assert_value(response, 13, "0x50")  # power
+            # Find Color Section 'C' (0x43)
+            c_idx = data.find(0x43)
+            if c_idx != -1 and len(data) >= c_idx + 5:
+                red, green, blue, brightness = data[c_idx + 1 : c_idx + 5]
+                new_color = (red, green, blue)
+                new_brightness = brightness
+            else:
+                new_color = self.color
+                new_brightness = self.brightness
 
-            red, green, blue, brightness = [int(x, 16) for x in response[6:10]]
-            sound = PyHatchBabyRestSound(int(response[11], 16))
-            volume = int(response[12], 16)
-            power = not bool(int("11000000", 2) & int(response[14], 16))
+            # Find Sound Section 'S' (0x53)
+            s_idx = data.find(0x53)
+            if s_idx != -1 and len(data) >= s_idx + 3:
+                new_sound = PyHatchBabyRestSound(data[s_idx + 1])
+                new_volume = data[s_idx + 2]
+            else:
+                new_sound = self.sound
+                new_volume = self.volume
 
-            new_color = (red, green, blue)
+            # Find Power Section 'P' (0x50)
+            p_idx = data.find(0x50)
+            if p_idx != -1 and len(data) >= p_idx + 2:
+                new_power = not bool(int("11000000", 2) & data[p_idx + 1])
+            else:
+                new_power = self.power
 
             # Check if anything has actually changed
             if (
                 new_color == self.color
-                and brightness == self.brightness
-                and sound == self.sound
-                and volume == self.volume
-                and power == self.power
+                and new_brightness == self.brightness
+                and new_sound == self.sound
+                and new_volume == self.volume
+                and new_power == self.power
             ):
-                _LOGGER.debug("State unchanged, skipping callback")
                 return
 
             self.color = new_color
-            self.brightness = brightness
-            self.sound = sound
-            self.volume = volume
-            self.power = power
+            self.brightness = new_brightness
+            self.sound = new_sound
+            self.volume = new_volume
+            self.power = new_power
 
             _LOGGER.debug(
                 "Parsed state (CHANGED): power=%s, brightness=%s, color=%s, sound=%s, volume=%s",

@@ -36,6 +36,7 @@ async def async_setup_entry(
     entry.async_on_unload(
         lambda: hatch_rest_device.remove_callback(coordinator._handle_api_update)
     )
+    entry.async_on_unload(coordinator._cancel_bluetooth_advertisements)
 
     # Fetch initial data so we have data when entities subscribe
     #
