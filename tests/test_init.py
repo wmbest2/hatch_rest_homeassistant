@@ -49,6 +49,7 @@ class TestAsyncSetupEntry:
         mock_api.sound = PyHatchBabyRestSound.none
         mock_api.volume = 50
         mock_api.refresh_data = AsyncMock()
+        mock_api.select_favorite = AsyncMock()
 
         with patch(
             "custom_components.hatch_rest.bluetooth.async_ble_device_from_address",
@@ -59,10 +60,14 @@ class TestAsyncSetupEntry:
                 return_value=mock_api,
             ):
                 with patch(
-                    "homeassistant.config_entries.ConfigEntries.async_forward_entry_setups",
-                    new_callable=AsyncMock,
-                ) as mock_forward:
-                    result = await async_setup_entry(hass, mock_entry)
+                    "custom_components.hatch_rest.coordinator.bluetooth.async_register_callback",
+                    return_value=MagicMock(),
+                ):
+                    with patch(
+                        "homeassistant.config_entries.ConfigEntries.async_forward_entry_setups",
+                        new_callable=AsyncMock,
+                    ) as mock_forward:
+                        result = await async_setup_entry(hass, mock_entry)
 
         assert result is True
         assert mock_entry.runtime_data is not None
@@ -108,8 +113,12 @@ class TestAsyncSetupEntry:
                 "custom_components.hatch_rest.PyHatchBabyRestAsync",
                 return_value=mock_api,
             ):
-                with pytest.raises(ConfigEntryNotReady):
-                    await async_setup_entry(hass, mock_entry)
+                with patch(
+                    "custom_components.hatch_rest.coordinator.bluetooth.async_register_callback",
+                    return_value=MagicMock(),
+                ):
+                    with pytest.raises(ConfigEntryNotReady):
+                        await async_setup_entry(hass, mock_entry)
 
 
 class TestAsyncUnloadEntry:

@@ -1,12 +1,17 @@
 """Hatch Rest integration."""
 
+import logging
+
 from homeassistant import config_entries, core
 from homeassistant.components import bluetooth
 from homeassistant.const import CONF_ADDRESS, Platform
 from homeassistant.exceptions import ConfigEntryNotReady
 
 from .api import PyHatchBabyRestAsync
+from .const import DOMAIN
 from .coordinator import HatchBabyRestUpdateCoordinator
+
+_LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = [Platform.LIGHT, Platform.MEDIA_PLAYER, Platform.SWITCH]
 

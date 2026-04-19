@@ -2,9 +2,12 @@
 
 import logging
 
+import voluptuous as vol
+
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import config_validation as cv, entity_platform
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .coordinator import HatchBabyRestEntity
@@ -21,6 +24,21 @@ async def async_setup_entry(
     coordinator = config_entry.runtime_data
     # only need to update_before_add on one entity -- switch is "master" entity
     async_add_entities([HatchBabyRestSwitch(coordinator)], update_before_add=True)
+
+    platform = entity_platform.async_get_current_platform()
+    platform.async_register_entity_service(
+        "select_favorite",
+        {vol.Required("index"): vol.All(cv.positive_int, vol.Range(min=1, max=6))},
+        "async_select_favorite",
+    )
+    platform.async_register_entity_service(
+        "send_command",
+        {
+            vol.Required("command"): cv.string,
+            vol.Optional("raw", default=False): cv.boolean,
+        },
+        "async_send_command",
+    )
 
 
 class HatchBabyRestSwitch(HatchBabyRestEntity, SwitchEntity):  # pyright: ignore[reportIncompatibleVariableOverride]
@@ -60,3 +78,14 @@ class HatchBabyRestSwitch(HatchBabyRestEntity, SwitchEntity):  # pyright: ignore
             # If this method is used on a coordinator that polls, it will reset the time until the next time it will poll for data.
             # each _send_command calls _refresh_data and updates API data states, so use that
             self.coordinator.async_set_updated_data(self.coordinator.get_current_data())
+
+    async def async_select_favorite(self, index: int) -> None:
+        """Select a favorite slot by index."""
+        _LOGGER.debug("Service: select_favorite index=%d", index)
+        await self._hatch_rest_device.select_favorite(index)
+        await self.coordinator.async_refresh()
+
+    async def async_send_command(self, command: str, raw: bool = False) -> None:
+        """Send a command to the device."""
+        _LOGGER.debug("Service: send_command '%s' raw=%s", command, raw)
+        await self._hatch_rest_device._send_command(command, raw=raw)

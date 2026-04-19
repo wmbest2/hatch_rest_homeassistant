@@ -1,7 +1,7 @@
 """Tests for Hatch Rest coordinator."""
 
 from datetime import timedelta
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.core import HomeAssistant
@@ -19,16 +19,20 @@ class TestHatchBabyRestUpdateCoordinator:
 
     def test_init(self, hass: HomeAssistant, mock_hatch_api: AsyncMock):
         """Test coordinator initialization."""
-        coordinator = HatchBabyRestUpdateCoordinator(
-            hass,
-            unique_id="aabbccddeeff",
-            hatch_rest_device=mock_hatch_api,
-        )
+        with patch(
+            "custom_components.hatch_rest.coordinator.bluetooth.async_register_callback",
+            return_value=MagicMock(),
+        ):
+            coordinator = HatchBabyRestUpdateCoordinator(
+                hass,
+                unique_id="aabbccddeeff",
+                hatch_rest_device=mock_hatch_api,
+            )
 
         assert coordinator.unique_id == "aabbccddeeff"
         assert coordinator.hatch_rest_device == mock_hatch_api
         assert coordinator.name == DOMAIN
-        assert coordinator.update_interval == timedelta(seconds=60)
+        assert coordinator.update_interval == timedelta(hours=1)
 
     def test_get_current_data(self, mock_coordinator: HatchBabyRestUpdateCoordinator):
         """Test get_current_data returns device state."""
@@ -45,11 +49,15 @@ class TestHatchBabyRestUpdateCoordinator:
         self, hass: HomeAssistant, mock_hatch_api: AsyncMock
     ):
         """Test successful data update."""
-        coordinator = HatchBabyRestUpdateCoordinator(
-            hass,
-            unique_id="aabbccddeeff",
-            hatch_rest_device=mock_hatch_api,
-        )
+        with patch(
+            "custom_components.hatch_rest.coordinator.bluetooth.async_register_callback",
+            return_value=MagicMock(),
+        ):
+            coordinator = HatchBabyRestUpdateCoordinator(
+                hass,
+                unique_id="aabbccddeeff",
+                hatch_rest_device=mock_hatch_api,
+            )
 
         data = await coordinator._async_update_data()
 
@@ -63,11 +71,15 @@ class TestHatchBabyRestUpdateCoordinator:
         self, hass: HomeAssistant, mock_hatch_api: AsyncMock
     ):
         """Test update failure returns cached data when available."""
-        coordinator = HatchBabyRestUpdateCoordinator(
-            hass,
-            unique_id="aabbccddeeff",
-            hatch_rest_device=mock_hatch_api,
-        )
+        with patch(
+            "custom_components.hatch_rest.coordinator.bluetooth.async_register_callback",
+            return_value=MagicMock(),
+        ):
+            coordinator = HatchBabyRestUpdateCoordinator(
+                hass,
+                unique_id="aabbccddeeff",
+                hatch_rest_device=mock_hatch_api,
+            )
 
         # Set up cached data
         coordinator.data = {
@@ -91,11 +103,15 @@ class TestHatchBabyRestUpdateCoordinator:
         self, hass: HomeAssistant, mock_hatch_api: AsyncMock
     ):
         """Test update failure raises when no cached data."""
-        coordinator = HatchBabyRestUpdateCoordinator(
-            hass,
-            unique_id="aabbccddeeff",
-            hatch_rest_device=mock_hatch_api,
-        )
+        with patch(
+            "custom_components.hatch_rest.coordinator.bluetooth.async_register_callback",
+            return_value=MagicMock(),
+        ):
+            coordinator = HatchBabyRestUpdateCoordinator(
+                hass,
+                unique_id="aabbccddeeff",
+                hatch_rest_device=mock_hatch_api,
+            )
         coordinator.data = None
 
         mock_hatch_api.refresh_data.side_effect = Exception("Connection failed")

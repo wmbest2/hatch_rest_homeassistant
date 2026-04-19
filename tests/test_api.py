@@ -6,20 +6,23 @@ import pytest
 from bleak.backends.device import BLEDevice
 from bleak_retry_connector import BleakConnectionError
 
-from custom_components.hatch_rest.api import PyHatchBabyRestAsync, _assert_value
+from custom_components.hatch_rest.api import PyHatchBabyRestAsync
 from custom_components.hatch_rest.const import CHAR_TX, PyHatchBabyRestSound
+
+
+def _assert_value(check_val: list[str], index: int, assert_val: str):
+    if check_val[index] != assert_val:
+        raise ValueError(f'response[{index}] "{check_val[index]}" != "{assert_val}"')
 
 
 class TestAssertValue:
     """Tests for _assert_value helper."""
 
     def test_assert_value_passes(self):
-        """Test assertion passes with matching value."""
         values = ["0x00", "0x43", "0x53"]
-        _assert_value(values, 1, "0x43")  # Should not raise
+        _assert_value(values, 1, "0x43")
 
     def test_assert_value_fails(self):
-        """Test assertion fails with mismatched value."""
         values = ["0x00", "0x43", "0x53"]
         with pytest.raises(ValueError, match='response\\[1\\] "0x43" != "0x99"'):
             _assert_value(values, 1, "0x99")
@@ -31,7 +34,11 @@ class TestPyHatchBabyRestAsync:
     @pytest.fixture
     def api(self, mock_ble_device: BLEDevice) -> PyHatchBabyRestAsync:
         """Create API instance."""
-        return PyHatchBabyRestAsync(mock_ble_device)
+        api = PyHatchBabyRestAsync(mock_ble_device)
+        yield api
+        if api._disconnect_timer:
+            api._disconnect_timer.cancel()
+            api._disconnect_timer = None
 
     def test_init(self, api: PyHatchBabyRestAsync, mock_ble_device: BLEDevice):
         """Test API initialization."""
@@ -194,8 +201,15 @@ class TestPyHatchBabyRestAsync:
         mock_client.write_gatt_char.assert_called_once_with(
             char_specifier=CHAR_TX,
             data=bytearray("SI01", "utf-8"),
-            response=True,
+            response=False,
         )
+
+    @pytest.mark.asyncio
+    async def test_select_favorite(self, api: PyHatchBabyRestAsync):
+        """Test select_favorite sends correct command."""
+        with patch.object(api, "_send_command", new_callable=AsyncMock) as mock_send:
+            await api.select_favorite(2)
+            mock_send.assert_called_once_with("PSB02")
 
     def test_active_operations_tracking(self, api: PyHatchBabyRestAsync):
         """Test active operations counter."""

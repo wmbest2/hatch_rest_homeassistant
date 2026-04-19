@@ -39,6 +39,29 @@ class HatchBabyRestMediaPlayer(HatchBabyRestEntity, MediaPlayerEntity):  # pyrig
         self._previous_sound: PyHatchBabyRestSound | None = None
 
     @property
+    def extra_state_attributes(self) -> dict | None:
+        """Expose schedules and active favorite as state attributes."""
+        device = self._hatch_rest_device
+        schedules = []
+        for slot, data in sorted(device.schedules.items()):
+            sound = data.get("sound")
+            schedules.append({
+                "slot": slot,
+                "name": data.get("name", f"Schedule {slot}"),
+                "hour": data.get("hour"),
+                "minute": data.get("minute"),
+                "days": data.get("days"),
+                "sound": sound.name if hasattr(sound, "name") else sound,
+                "volume": data.get("volume"),
+                "brightness": data.get("brightness"),
+                "color": data.get("color"),
+            })
+        return {
+            "schedules": schedules,
+            "active_favorite": device.active_favorite,
+        }
+
+    @property
     def device_class(self) -> MediaPlayerDeviceClass | None:  # pyright: ignore[reportIncompatibleVariableOverride]
         """Return the device class of the media player."""
         return MediaPlayerDeviceClass.SPEAKER
@@ -53,14 +76,11 @@ class HatchBabyRestMediaPlayer(HatchBabyRestEntity, MediaPlayerEntity):  # pyrig
     @property
     def source(self) -> str | None:  # pyright: ignore[reportIncompatibleVariableOverride]
         """Return the current source of the media player."""
-        if self.coordinator.data.get("sound"):
-            _LOGGER.debug(
-                "media_player source = %d (%s)",
-                self.coordinator.data.get("sound"),
-                PyHatchBabyRestSound(self.coordinator.data.get("sound")).name,
-            )
-        else:
-            _LOGGER.debug("media_player source = None")
+        active_fav = self.coordinator.hatch_rest_device.active_favorite
+        if active_fav:
+            fav_info = self.coordinator.hatch_rest_device.favorites.get(active_fav, {})
+            return fav_info.get("name", f"Favorite {active_fav}")
+            
         sound = self.coordinator.data.get("sound")
         if sound:
             return sound.name.capitalize()
@@ -69,7 +89,15 @@ class HatchBabyRestMediaPlayer(HatchBabyRestEntity, MediaPlayerEntity):  # pyrig
     @property
     def source_list(self) -> list[str] | None:  # pyright: ignore[reportIncompatibleVariableOverride]
         """Return a list of available sources."""
-        return [sound.name.capitalize() for sound in PyHatchBabyRestSound]
+        sources = []
+        # Add Favorites first
+        for i in range(1, 7):
+            fav_info = self.coordinator.hatch_rest_device.favorites.get(i, {})
+            sources.append(fav_info.get("name", f"Favorite {i}"))
+        
+        # Add raw sounds
+        sources.extend([sound.name.capitalize() for sound in PyHatchBabyRestSound if sound.name != "none"])
+        return sources
 
     @property
     def state(self) -> MediaPlayerState | None:  # pyright: ignore[reportIncompatibleVariableOverride]
@@ -116,14 +144,32 @@ class HatchBabyRestMediaPlayer(HatchBabyRestEntity, MediaPlayerEntity):  # pyrig
 
     async def async_select_source(self, source: str) -> None:
         """Select a source from the list of available sources."""
-        source_number = PyHatchBabyRestSound[source.lower()]
-        self._previous_sound = PyHatchBabyRestSound(source_number)
-        _LOGGER.debug(
-            "media_player setting source = %d (%s) ",
-            source_number,
-            PyHatchBabyRestSound(source_number).name,
-        )
-        await self._hatch_rest_device.set_sound(source_number)
+        _LOGGER.debug("media_player selecting source: %s", source)
+        
+        # Check if it's a favorite (either by index name or custom name)
+        selected_index = None
+        for i in range(1, 7):
+            fav_info = self._hatch_rest_device.favorites.get(i, {})
+            if source == fav_info.get("name") or source == f"Favorite {i}":
+                selected_index = i
+                break
+        
+        if selected_index is not None:
+            _LOGGER.debug("media_player selecting favorite %d", selected_index)
+            await self._hatch_rest_device.select_favorite(selected_index)
+        else:
+            # Fallback to raw sound IDs
+            try:
+                source_number = PyHatchBabyRestSound[source.lower()]
+                self._previous_sound = PyHatchBabyRestSound(source_number)
+                _LOGGER.debug(
+                    "media_player setting sound = %d (%s) ",
+                    source_number,
+                    PyHatchBabyRestSound(source_number).name,
+                )
+                await self._hatch_rest_device.set_sound(source_number)
+            except KeyError:
+                _LOGGER.error("Invalid source selected: %s", source)
 
         # https://developers.home-assistant.io/docs/integration_fetching_data/
         # If this method is used on a coordinator that polls, it will reset the time until the next time it will poll for data.

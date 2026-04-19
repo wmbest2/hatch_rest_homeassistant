@@ -78,6 +78,10 @@ def mock_hatch_api(mock_ble_device: BLEDevice) -> Generator[AsyncMock, None, Non
         mock_api.set_volume = AsyncMock()
         mock_api.set_color = AsyncMock()
         mock_api.set_brightness = AsyncMock()
+        mock_api.active_favorite = None
+        mock_api.favorites = {}
+        mock_api.schedules = {}
+        mock_api.select_favorite = AsyncMock()
 
         yield mock_api
 
@@ -87,11 +91,15 @@ def mock_coordinator(
     hass: HomeAssistant, mock_hatch_api: AsyncMock
 ) -> HatchBabyRestUpdateCoordinator:
     """Create a mock coordinator."""
-    coordinator = HatchBabyRestUpdateCoordinator(
-        hass,
-        unique_id="aabbccddeeff",
-        hatch_rest_device=mock_hatch_api,
-    )
+    with patch(
+        "custom_components.hatch_rest.coordinator.bluetooth.async_register_callback",
+        return_value=MagicMock(),
+    ):
+        coordinator = HatchBabyRestUpdateCoordinator(
+            hass,
+            unique_id="aabbccddeeff",
+            hatch_rest_device=mock_hatch_api,
+        )
     coordinator.data = {
         "brightness": 128,
         "color": (255, 128, 64),

@@ -10,7 +10,6 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
     DataUpdateCoordinator,
-    UpdateFailed,
 )
 
 from .api import PyHatchBabyRestAsync
@@ -33,7 +32,7 @@ class HatchBabyRestUpdateCoordinator(DataUpdateCoordinator):
             hass,
             _LOGGER,
             name=DOMAIN,
-            update_interval=timedelta(seconds=60),
+            update_interval=timedelta(hours=1),
         )
         self.unique_id = unique_id
         self.hatch_rest_device = hatch_rest_device
@@ -52,6 +51,7 @@ class HatchBabyRestUpdateCoordinator(DataUpdateCoordinator):
             {"address": self._address, "connectable": True},
             bluetooth.BluetoothScanningMode.PASSIVE,
         )
+
 
     @callback
     def _handle_advertisement(
@@ -93,16 +93,12 @@ class HatchBabyRestUpdateCoordinator(DataUpdateCoordinator):
         try:
             await self.hatch_rest_device.refresh_data()
         except Exception as e:
-            _LOGGER.warning(
-                "_async_update_data failed to refresh Hatch Rest data: %r", e
-            )
-            # Don’t raise; use previous successful data if available
+            _LOGGER.warning("_async_update_data failed: %r", e)
             if self._last_data:
-                _LOGGER.debug("Using cached data due to _async_update_data failure")
                 return self._last_data
+            from homeassistant.helpers.update_coordinator import UpdateFailed
             raise UpdateFailed(f"Device update failed: {e}") from e
-        else:
-            return self.get_current_data()
+        return self.get_current_data()
 
 
 class HatchBabyRestEntity(CoordinatorEntity[HatchBabyRestUpdateCoordinator]):

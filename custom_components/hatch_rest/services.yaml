@@ -1,0 +1,39 @@
+select_favorite:
+  name: Select Favorite
+  description: Activate a favorite slot on the target Hatch Rest device.
+  target:
+    entity:
+      integration: hatch_rest
+      domain: switch
+  fields:
+    index:
+      name: Index
+      description: Favorite slot to activate (1–6).
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 6
+          mode: box
+
+send_command:
+  name: Send Command
+  description: Send a command directly to the target Hatch Rest device. Useful for protocol exploration.
+  target:
+    entity:
+      integration: hatch_rest
+      domain: switch
+  fields:
+    command:
+      name: Command
+      description: The command to send. ASCII string by default (e.g. "GF", "PGB01"), or a hex-encoded byte string if raw is true (e.g. "505742303101054000000000000080ff00001603").
+      required: true
+      selector:
+        text:
+    raw:
+      name: Raw (hex)
+      description: If true, treat the command as a hex-encoded byte string and send the raw bytes. Use this for binary protocol commands like PWB.
+      required: false
+      default: false
+      selector:
+        boolean:

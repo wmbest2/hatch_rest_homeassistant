@@ -50,15 +50,18 @@ class TestHatchBabyRestMediaPlayer:
         assert media_player_entity.source is None
 
     def test_source_list(self, media_player_entity: HatchBabyRestMediaPlayer):
-        """Test source_list contains all sounds."""
+        """Test source_list contains favorites and sounds."""
         sources = media_player_entity.source_list
 
-        assert "None" in sources
+        assert "Favorite 1" in sources
+        assert "Favorite 6" in sources
         assert "Ocean" in sources
         assert "Rain" in sources
         assert "Stream" in sources
         assert "Bird" in sources
-        assert len(sources) == len(PyHatchBabyRestSound)
+        assert "None" not in sources
+        # 6 favorite slots + all sounds except "none"
+        assert len(sources) == 6 + len(PyHatchBabyRestSound) - 1
 
     def test_state_off_when_power_off(
         self, media_player_entity: HatchBabyRestMediaPlayer
