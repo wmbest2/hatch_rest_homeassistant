@@ -27,6 +27,11 @@ async def async_setup_entry(
 
     platform = entity_platform.async_get_current_platform()
     platform.async_register_entity_service(
+        "save_to_favorite",
+        {vol.Required("index"): vol.All(cv.positive_int, vol.Range(min=1, max=6))},
+        "async_save_to_favorite",
+    )
+    platform.async_register_entity_service(
         "select_favorite",
         {vol.Required("index"): vol.All(cv.positive_int, vol.Range(min=1, max=6))},
         "async_select_favorite",
@@ -78,6 +83,12 @@ class HatchBabyRestSwitch(HatchBabyRestEntity, SwitchEntity):  # pyright: ignore
             # If this method is used on a coordinator that polls, it will reset the time until the next time it will poll for data.
             # each _send_command calls _refresh_data and updates API data states, so use that
             self.coordinator.async_set_updated_data(self.coordinator.get_current_data())
+
+    async def async_save_to_favorite(self, index: int) -> None:
+        """Save current device state to a favorite slot."""
+        _LOGGER.debug("Service: save_to_favorite index=%d", index)
+        await self._hatch_rest_device.save_to_favorite(index)
+        self.coordinator.async_set_updated_data(self.coordinator.get_current_data())
 
     async def async_select_favorite(self, index: int) -> None:
         """Select a favorite slot by index."""

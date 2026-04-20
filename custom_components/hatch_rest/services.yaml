@@ -1,3 +1,21 @@
+save_to_favorite:
+  name: Save to Favorite
+  description: Save the target device's current state (sound, volume, color, brightness) to a favorite slot.
+  target:
+    entity:
+      integration: hatch_rest
+      domain: switch
+  fields:
+    index:
+      name: Index
+      description: Favorite slot to save to (1–6).
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 6
+          mode: box
+
 select_favorite:
   name: Select Favorite
   description: Activate a favorite slot on the target Hatch Rest device.
