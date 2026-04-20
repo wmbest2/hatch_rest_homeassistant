@@ -67,8 +67,10 @@ class TestPyHatchBabyRestAsync:
             new_callable=AsyncMock,
             return_value=mock_client,
         ):
-            await api._client_connect()
-            assert api._client == mock_client
+            with patch.object(api, "_fetch_favorites", new_callable=AsyncMock):
+                with patch.object(api, "_fetch_schedules", new_callable=AsyncMock):
+                    await api._client_connect()
+                    assert api._client == mock_client
 
     @pytest.mark.asyncio
     async def test_client_connect_failure(self, api: PyHatchBabyRestAsync):
@@ -254,6 +256,7 @@ class TestPyHatchBabyRestAsync:
     @pytest.mark.asyncio
     async def test_toggle_favorite(self, api: PyHatchBabyRestAsync):
         """Test toggle_favorite sends correct commands."""
+        api.favorites[2] = {}  # seed cache so guard passes
         with patch.object(api, "_send_commands", new_callable=AsyncMock) as mock_send:
             await api.toggle_favorite(2, True)
             mock_send.assert_called_once_with(
@@ -279,28 +282,24 @@ class TestPyHatchBabyRestAsync:
                 new_callable=AsyncMock,
                 return_value=mock_client,
             ):
-                # Scenario 1: Full fetch (last_full_fetch is None)
-                api._last_full_fetch = None
-                await api._client_connect()
-                mock_client.write_gatt_char.assert_any_call(
-                    CHAR_TX, bytearray(b"ST20260420100000U"), response=False
-                )
-                
-                # Scenario 2: Recent fetch (sync should still happen)
-                mock_client.write_gatt_char.reset_mock()
-                api._client = None # Reset to trigger connect
-                api._last_full_fetch = monotonic()
-                await api._client_connect()
-                mock_client.write_gatt_char.assert_any_call(
-                    CHAR_TX, bytearray(b"ST20260420100000U"), response=False
-                )
+                with patch.object(api, "_fetch_favorites", new_callable=AsyncMock):
+                  with patch.object(api, "_fetch_schedules", new_callable=AsyncMock):
+                    # Scenario 1: Full fetch (last_full_fetch is None)
+                    api._last_full_fetch = None
+                    await api._client_connect()
+                    mock_client.write_gatt_char.assert_any_call(
+                        CHAR_TX, bytearray(b"ST20260420100000U"), response=False
+                    )
 
-    def test_active_operations_tracking(self, api: PyHatchBabyRestAsync):
-        """Test active operations counter."""
+                    # Scenario 2: Recent fetch (sync should still happen)
+                    mock_client.write_gatt_char.reset_mock()
+                    api._client = None # Reset to trigger connect
+                    api._last_full_fetch = monotonic()
+                    await api._client_connect()
+                    mock_client.write_gatt_char.assert_any_call(
+                        CHAR_TX, bytearray(b"ST20260420100000U"), response=False
+                    )
+
+    def test_active_operations_starts_at_zero(self, api: PyHatchBabyRestAsync):
+        """Test active operations counter initializes to zero."""
         assert api._active_operations == 0
-        api._set_active_operations(1)
-        assert api._active_operations == 1
-        api._set_active_operations(1)
-        assert api._active_operations == 2
-        api._set_active_operations(-1)
-        assert api._active_operations == 1

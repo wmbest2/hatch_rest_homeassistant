@@ -27,6 +27,7 @@ class TestAsyncSetupEntry:
         entry.entry_id = "test_entry"
         entry.unique_id = "aabbccddeeff"
         entry.data = {CONF_ADDRESS: "AA:BB:CC:DD:EE:FF"}
+        entry.options = {}
         entry.runtime_data = None
         return entry
 
@@ -47,6 +48,7 @@ class TestAsyncSetupEntry:
         mock_api.color = (255, 255, 255)
         mock_api.power = True
         mock_api.sound = PyHatchBabyRestSound.none
+        mock_api._timer_expires_at = None
         mock_api.volume = 50
         mock_api.refresh_data = AsyncMock()
         mock_api.select_favorite = AsyncMock()

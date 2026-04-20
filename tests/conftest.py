@@ -1,5 +1,6 @@
 """Fixtures for Hatch Rest tests."""
 
+from datetime import timedelta
 from collections.abc import Generator
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -102,6 +103,7 @@ def mock_coordinator(
             hass,
             unique_id="aabbccddeeff",
             hatch_rest_device=mock_hatch_api,
+            update_interval=timedelta(minutes=10),
         )
     coordinator.data = {
         "brightness": 128,

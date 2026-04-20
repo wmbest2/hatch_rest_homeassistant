@@ -39,28 +39,33 @@ class HatchBabyRestFavoriteSelect(HatchBabyRestEntity, SelectEntity):
 
     @property
     def options(self) -> list[str]:
-        """Return a list of available favorites."""
+        """Return a list of enabled favorites."""
         options = ["None"]
         for i in range(1, 7):
             fav_info = self._hatch_rest_device.favorites.get(i, {})
-            options.append(fav_info.get("name", f"Favorite {i}"))
+            # Only include if explicitly enabled or if we don't have the info yet (to avoid empty list)
+            if fav_info.get("enabled", True):
+                options.append(fav_info.get("name", f"Favorite {i}"))
         return options
 
     @property
     def current_option(self) -> str | None:
         """Return the current selected favorite."""
         active_fav = self._hatch_rest_device.active_favorite
-        if not active_fav or active_fav > 6:
+        if active_fav is None or active_fav == 0 or active_fav > 6:
             return "None"
         
         fav_info = self._hatch_rest_device.favorites.get(active_fav, {})
-        return fav_info.get("name", f"Favorite {active_fav}")
+        name = fav_info.get("name", f"Favorite {active_fav}")
+        return name if name in self.options else "None"
 
     async def async_select_option(self, option: str) -> None:
         """Select a favorite."""
         if option == "None":
-            # There isn't a direct "deselect favorite" other than setting a manual state.
-            # But SP00 might work, or we just leave it.
+            # Deselecting a favorite usually means turning the device off or to a manual state.
+            # SP00 (None) is sometimes used in these protocols.
+            await self._hatch_rest_device.select_favorite(0)
+            await self.coordinator.async_refresh()
             return
 
         selected_index = None

@@ -7,10 +7,13 @@ It provides a fully asynchronous, locally-controlled interface using a rewritten
 ## ✨ Features
 
 * **Local BLE control** — no cloud required
-* **Three (3) entities exposed:**
-  * Light (RGB + brightness)
-  * Switch (main power)
-  * Media Player (sounds + volume)
+* **Efficient Connection Management** — Batches multiple commands into a single session and holds the connection open for 10 seconds of idle time to prevent "thrashing" the Bluetooth radio during heavy changes.
+* **Smart Refresh** — Detects physical changes via BLE advertisements and schedules a debounced deep refresh (10s) to keep HA perfectly in sync.
+* **Live Timer Tracking** — High-accuracy local timer estimation with a live-countdown `TIMESTAMP` sensor.
+* **Enhanced Reliability** — Uses "write with response" for all GATT commands and optimized batch sequencing to prevent device corruption.
+* **Configurable Polling** — Adjust the update frequency (default: 10 min) via the integration options flow.
+* **Dynamic Favorites** — Automatically filters the favorites list to only show those enabled in your Hatch settings.
+* **Full Protocol Support** — Comprehensive implementation of the Hatch Rest BLE protocol, including favorites (PGB), schedules (EGB), and timers (SD/GI/GD).
 
 ## 📦 Installation
 
@@ -26,34 +29,38 @@ It provides a fully asynchronous, locally-controlled interface using a rewritten
 1. Go to **Settings → Devices & Services → Add Integration**
 2. Search for **Hatch Rest**
 3. Choose your discovered device from the list
-4. Confirm the Bluetooth address
+4. Configure the **Scan Interval** (default is 10 minutes)
 5. Done!
 
 ## 🧩 Supported Entities
 
 ### 🔌 Switch
-* Master on/off power state of the device
+* **Master Switch**: Main power state of the device.
+* **Favorite Enabled**: Configuration toggles to enable or disable specific favorite slots.
+* **Schedule Enabled**: Configuration toggles to enable or disable specific schedule slots.
 
 ### 🟡 Light
+* RGB color and brightness control.
 
 ### 🔊 Media Player
+* Sound selection and volume control.
+
+### 📋 Select
+* **Favorite**: Quickly switch between your pre-configured favorites. Only enabled favorites are shown.
+
+### ⏲️ Sensor
+* **Timer Remaining**: A live-updating timestamp sensor showing when the active timer will expire.
+
+### 🔢 Number
+* **Set Timer**: A numeric input to quickly set a timer (in minutes) from the dashboard.
 
 ## 📡 Bluetooth Requirements
 
 Because the Hatch Rest is a BLE device:
 
-* A compatible Home Assistant Bluetooth controller is required
-
-
-This integration uses BLE connections aggressively but cleanly:
-
-* Queues operations
-* Avoids simultaneous connects
-* Disconnects when idle
-* Automatically retries on common BLE failures
+* A compatible Home Assistant Bluetooth controller is required.
+* This integration uses `bleak_retry_connector` for robust connection management.
 
 ## 🧪 Contributing
 
 Issues and PRs are welcome!
-
-If you improve the async BLE API or add new services (timers, programs, gradients), feel free to submit a pull request.

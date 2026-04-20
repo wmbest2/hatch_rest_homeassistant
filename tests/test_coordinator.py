@@ -27,12 +27,13 @@ class TestHatchBabyRestUpdateCoordinator:
                 hass,
                 unique_id="aabbccddeeff",
                 hatch_rest_device=mock_hatch_api,
+                update_interval=timedelta(minutes=10),
             )
 
         assert coordinator.unique_id == "aabbccddeeff"
         assert coordinator.hatch_rest_device == mock_hatch_api
         assert coordinator.name == DOMAIN
-        assert coordinator.update_interval == timedelta(hours=1)
+        assert coordinator.update_interval == timedelta(minutes=10)
 
     def test_get_current_data(self, mock_coordinator: HatchBabyRestUpdateCoordinator):
         """Test get_current_data returns device state."""
@@ -57,6 +58,7 @@ class TestHatchBabyRestUpdateCoordinator:
                 hass,
                 unique_id="aabbccddeeff",
                 hatch_rest_device=mock_hatch_api,
+                update_interval=timedelta(minutes=10),
             )
 
         data = await coordinator._async_update_data()
@@ -79,6 +81,7 @@ class TestHatchBabyRestUpdateCoordinator:
                 hass,
                 unique_id="aabbccddeeff",
                 hatch_rest_device=mock_hatch_api,
+                update_interval=timedelta(minutes=10),
             )
 
         # Set up cached data
@@ -111,6 +114,7 @@ class TestHatchBabyRestUpdateCoordinator:
                 hass,
                 unique_id="aabbccddeeff",
                 hatch_rest_device=mock_hatch_api,
+                update_interval=timedelta(minutes=10),
             )
         coordinator.data = None
 

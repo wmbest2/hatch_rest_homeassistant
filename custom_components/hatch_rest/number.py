@@ -43,8 +43,9 @@ class HatchBabyRestTimerNumber(HatchBabyRestEntity, NumberEntity):
 
     @property
     def native_value(self) -> float | None:
-        """Return remaining timer in minutes."""
-        return self.coordinator.data.get("timer_remaining")
+        """Return remaining timer in minutes, or None if no timer is active."""
+        remaining = self.coordinator.data.get("timer_remaining")
+        return remaining if remaining else None
 
     async def async_set_native_value(self, value: float) -> None:
         """Set the timer in minutes."""

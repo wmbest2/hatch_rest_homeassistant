@@ -1,5 +1,6 @@
 """Hatch Rest coordinator."""
 
+import asyncio
 from datetime import datetime, timedelta
 import logging
 
@@ -38,8 +39,11 @@ class HatchBabyRestUpdateCoordinator(DataUpdateCoordinator):
         self.unique_id = unique_id
         self.hatch_rest_device = hatch_rest_device
         self._last_data: dict[
-            str, int | tuple[int, int, int] | bool | PyHatchBabyRestSound | None
+            str, int | tuple[int, int, int] | bool | PyHatchBabyRestSound | None | datetime
         ] = {}
+
+        self._refresh_timer: asyncio.TimerHandle | None = None
+        self._advertisement_hint: bool = False
 
         # Register callback for real-time updates from connections
         self.hatch_rest_device.register_callback(self._handle_api_update)
@@ -53,7 +57,6 @@ class HatchBabyRestUpdateCoordinator(DataUpdateCoordinator):
             bluetooth.BluetoothScanningMode.PASSIVE,
         )
 
-
     @callback
     def _handle_advertisement(
         self,
@@ -62,13 +65,42 @@ class HatchBabyRestUpdateCoordinator(DataUpdateCoordinator):
     ) -> None:
         """Handle an advertisement from the device."""
         _LOGGER.debug("Received advertisement for %s", service_info.address)
+        # Set a hint flag so we know this change came from an advertisement
+        self._advertisement_hint = True
         self.hatch_rest_device.update_from_advertisement(service_info)
-        # Note: update_from_advertisement will trigger the API callback if state changed
+        self._advertisement_hint = False
 
     def _handle_api_update(self) -> None:
         """Handle pushed updates from the API."""
         _LOGGER.debug("API pushed an update, updating coordinator data")
         self.async_set_updated_data(self.get_current_data())
+
+        # If the update was triggered by a passive advertisement, schedule a deep refresh
+        # to catch timer or favorite changes that aren't in the advertisement.
+        if self._advertisement_hint:
+            self._schedule_deep_refresh()
+
+    def _schedule_deep_refresh(self) -> None:
+        """Schedule a deep refresh after a debounce period."""
+        if self._refresh_timer:
+            self._refresh_timer.cancel()
+
+        # 10s debounce to let manual/app changes settle before HA connects
+        self._refresh_timer = self.hass.loop.call_later(
+            10, lambda: self.hass.async_create_task(self._debounced_refresh())
+        )
+        _LOGGER.debug("Scheduled debounced deep refresh in 10s")
+
+    async def _debounced_refresh(self) -> None:
+        """Perform the debounced refresh."""
+        self._refresh_timer = None
+        # Don't trigger if we are already communicating with the device
+        if self.hatch_rest_device._active_operations > 0:
+            _LOGGER.debug("Skipping debounced refresh, device already busy")
+            return
+
+        _LOGGER.debug("Executing debounced deep refresh")
+        await self.async_refresh()
 
     def get_current_data(
         self,
