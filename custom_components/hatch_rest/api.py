@@ -6,6 +6,7 @@ https://github.com/kjoconnor/pyhatchbabyrest/blob/master/LICENSE
 
 """
 
+from collections import deque
 from collections.abc import Callable
 import asyncio
 from datetime import datetime
@@ -42,6 +43,7 @@ class PyHatchBabyRestAsync:
         # connection synchronization primitizes / state
         self._connection_cv = asyncio.Condition()
         self._connecting: bool = False
+        self._send_lock = asyncio.Lock()
         self._disconnect_timer: asyncio.TimerHandle | None = None
         self._callbacks: set[Callable[[], None]] = set()
         self._is_notifying: bool = False
@@ -53,14 +55,49 @@ class PyHatchBabyRestAsync:
         self.volume: int | None = None
         self.power: bool | None = None
         
+        # timer state
+        self.timer_total: int | None = None
+        self._timer_expires_at: float | None = None
+        
+        self.full_refresh_interval: int = 600 # seconds
+
+        self._init_collections()
+
+    @property
+    def timer_remaining(self) -> int | None:
+        """Return the remaining timer in minutes, calculated locally."""
+        if self._timer_expires_at is None:
+            return None
+        remaining = (self._timer_expires_at - monotonic()) / 60
+        if remaining <= 0:
+            return 0
+        return int(remaining + 0.01) # Small epsilon to handle precision issues
+
+    @timer_remaining.setter
+    def timer_remaining(self, value: int | None) -> None:
+        """Set the remaining timer in minutes and update expiration time."""
+        if value is not None:
+            # The device returns 65535 or 0xFFFF when no timer is active
+            if value >= 0xFFFF:
+                self._timer_expires_at = None
+                return
+            self._timer_expires_at = monotonic() + (value * 60)
+        else:
+            self._timer_expires_at = None
+
+    def _init_collections(self) -> None:
+        """Initialize collections."""
         self.favorites: dict[int, dict] = {}
         self.active_favorite: int | None = None
         self.schedules: dict[int, dict] = {}
         self._last_index_seen: int | None = None
         self._pending_slot: dict = {}  # buffered data before first index arrives
-        self._pgb_slot: int | None = None  # slot index of in-flight PGB (favorite) request
-        self._egb_slot: int | None = None  # slot index of in-flight EGB (schedule) request
+        self._pgb_slot: int | None = None  # slot index of in-flight PGB during initial fetch
+        self._egb_slot: int | None = None  # slot index of in-flight EGB during initial fetch
+        self._pending_pgb_slots: deque[int] = deque()  # slots queued from toggle_favorite
+        self._pending_egb_slots: deque[int] = deque()  # slots queued from toggle_schedule
         self._last_full_fetch: float | None = None  # monotonic time of last PGB+EGB sweep
+        self._pending_gf: bool = False  # True while waiting for a GF index response
 
     def update_ble_device(self, ble_device: BLEDevice) -> None:
         """Update the BLE device."""
@@ -145,6 +182,8 @@ class PyHatchBabyRestAsync:
             self._pending_slot = {}
             self._pgb_slot = None
             self._egb_slot = None
+            self._pending_pgb_slots.clear()
+            self._pending_egb_slots.clear()
 
             # Start notifications
             if client.is_connected:
@@ -161,6 +200,7 @@ class PyHatchBabyRestAsync:
                     # GF returns the active favorite index. Then PGB01-PGB06
                     # fetches each slot's config+name. Both confirmed via btsnoop.
                     _LOGGER.debug("Requesting active favorite index via 'GF'")
+                    self._pending_gf = True
                     await client.write_gatt_char(
                         CHAR_TX, bytearray(b"GF"), response=False
                     )
@@ -174,7 +214,7 @@ class PyHatchBabyRestAsync:
                     )
 
                     fetch_age = monotonic() - self._last_full_fetch if self._last_full_fetch else None
-                    if fetch_age is None or fetch_age > 3600:
+                    if fetch_age is None or fetch_age > self.full_refresh_interval:
                         _LOGGER.debug("Fetching favorites and schedules (age=%s)", fetch_age)
                         self.favorites = {}
                         self.schedules = {}
@@ -256,7 +296,9 @@ class PyHatchBabyRestAsync:
         commands: list[str],
         raw: bool = False,
         response: bool = True,
-        spacing_delay: float = 0.2,
+        spacing_delay: float = 0.1,
+        pgb_slot: int | None = None,
+        egb_slot: int | None = None,
     ):
         """Send a batch of commands to the device.
 
@@ -264,53 +306,63 @@ class PyHatchBabyRestAsync:
         :param raw: If True, decode command as hex string and send raw bytes.
         :param response: If True, wait for GATT-level acknowledgment.
         :param spacing_delay: Seconds to wait between commands in a batch.
+        :param pgb_slot: Favorite slot index expected in the PGB response (enqueued inside lock).
+        :param egb_slot: Schedule slot index expected in the EGB response (enqueued inside lock).
         """
-        if log_timing := _LOGGER.isEnabledFor(logging.DEBUG):
-            start = monotonic()
-            _LOGGER.debug(
-                "Started batch _send_commands at %s", datetime.now().isoformat()
-            )
+        async with self._send_lock:
+            if log_timing := _LOGGER.isEnabledFor(logging.DEBUG):
+                start = monotonic()
+                _LOGGER.debug(
+                    "Started batch _send_commands at %s", datetime.now().isoformat()
+                )
 
-        self._set_active_operations(1)
-        await self._client_connect()
+            self._set_active_operations(1)
+            await self._client_connect()
 
-        try:
-            if self._client and self._client.is_connected:
-                for i, command in enumerate(commands):
-                    data = (
-                        bytearray.fromhex(command)
-                        if raw
-                        else bytearray(command, "utf-8")
-                    )
-                    _LOGGER.debug("Sending command '%s' (Hex: %s)", command, data.hex())
-                    await self._client.write_gatt_char(
-                        char_specifier=CHAR_TX,
-                        data=data,
-                        response=response,
-                    )
-                    if i < len(commands) - 1 and spacing_delay > 0:
-                        await asyncio.sleep(spacing_delay)
-            else:
-                _LOGGER.warning("Could not send commands: Not connected to device")
+            # Register expected response slots AFTER connecting — _client_connect may clear
+            # the deques when reconnecting, so we enqueue only once the connection is stable.
+            if pgb_slot is not None:
+                self._pending_pgb_slots.append(pgb_slot)
+            if egb_slot is not None:
+                self._pending_egb_slots.append(egb_slot)
 
-        except (
-            BleakNotFoundError,
-            BleakOutOfConnectionSlotsError,
-            BleakAbortedError,
-            BleakConnectionError,
-            Exception,  # noqa: BLE001
-        ) as e:
-            _LOGGER.warning("Exception during _send_commands -- %r", e)
+            try:
+                if self._client and self._client.is_connected:
+                    for i, command in enumerate(commands):
+                        data = (
+                            bytearray.fromhex(command)
+                            if raw
+                            else bytearray(command, "utf-8")
+                        )
+                        _LOGGER.debug("Sending command '%s' (Hex: %s)", command, data.hex())
+                        await self._client.write_gatt_char(
+                            char_specifier=CHAR_TX,
+                            data=data,
+                            response=response,
+                        )
+                        if i < len(commands) - 1 and spacing_delay > 0:
+                            await asyncio.sleep(spacing_delay)
+                else:
+                    _LOGGER.warning("Could not send commands: Not connected to device")
 
-        self._set_active_operations(-1)
-        self._schedule_disconnect()
+            except (
+                BleakNotFoundError,
+                BleakOutOfConnectionSlotsError,
+                BleakAbortedError,
+                BleakConnectionError,
+                Exception,  # noqa: BLE001
+            ) as e:
+                _LOGGER.warning("Exception during _send_commands -- %r", e)
 
-        if log_timing:
-            _LOGGER.debug(
-                "Finished batch _send_commands at %s (total of %.3f seconds)",
-                datetime.now().isoformat(),
-                monotonic() - start,  # pyright: ignore[reportPossiblyUnboundVariable]
-            )
+            self._set_active_operations(-1)
+            self._schedule_disconnect()
+
+            if log_timing:
+                _LOGGER.debug(
+                    "Finished batch _send_commands at %s (total of %.3f seconds)",
+                    datetime.now().isoformat(),
+                    monotonic() - start,  # pyright: ignore[reportPossiblyUnboundVariable]
+                )
 
     async def _send_command(self, command: str, raw: bool = False, response: bool = True):
         """Send a single command to the device."""
@@ -350,6 +402,7 @@ class PyHatchBabyRestAsync:
         volume = data[2]
         brightness = data[9]
         blue, green, red = data[10], data[11], data[12]
+        flags = data[13] if len(data) > 13 else 0
         try:
             sound = PyHatchBabyRestSound(sound_id)
         except ValueError:
@@ -359,6 +412,7 @@ class PyHatchBabyRestAsync:
             "volume": volume,
             "brightness": brightness,
             "color": (red, green, blue),
+            "enabled": bool(flags & 0x80),  # bit 7: 0x96=enabled, 0x16=disabled (PSL C0 vs PSL 80)
             "raw": data.hex(),
         }
 
@@ -379,6 +433,7 @@ class PyHatchBabyRestAsync:
         brightness = data[13]
         blue, green, red = data[14], data[15], data[16]
         days_mask = data[18] if len(data) > 18 else 0
+        flags = data[19] if len(data) > 19 else 0
         modified_ts = struct.unpack_from("<I", data, 1)[0]
         days = {
             "mon": bool(days_mask & 0x02),
@@ -401,6 +456,7 @@ class PyHatchBabyRestAsync:
             "brightness": brightness,
             "color": (red, green, blue),
             "days": days,
+            "enabled": bool(flags & 0x40),
             "modified_ts": modified_ts,
             "raw": data.hex(),
         }
@@ -422,18 +478,42 @@ class PyHatchBabyRestAsync:
         changed = False
         try:
             header = data[0]
-            
-            # Header 0x30 is an Index block (ASCII "0", followed by index "1", "2"...)
-            if header == 0x30 and len(data) >= 2:
+
+            # GI response: "FF" = no timer active
+            if data == b"FF":
+                _LOGGER.debug("Timer: no timer active (GI=FF)")
+                if self.timer_total is not None or self.timer_remaining is not None:
+                    self.timer_total = None
+                    self.timer_remaining = None
+                    changed = True
+
+            # GD response: 4-char ASCII hex = remaining minutes (e.g. "0076" = 118 min)
+            elif len(data) == 4 and all(chr(b) in "0123456789ABCDEFabcdef" for b in data):
+                try:
+                    remaining = int(data.decode(), 16)
+                    _LOGGER.debug("Timer remaining: %d min (GD)", remaining)
+                    if self.timer_remaining != remaining:
+                        self.timer_remaining = remaining
+                        changed = True
+                except (ValueError, UnicodeDecodeError):
+                    pass
+
+            # Header 0x30 is GF active-favorite index — only trusted when we sent GF
+            elif self._pending_gf and header == 0x30 and len(data) >= 2:
+                self._pending_gf = False
                 index_str = data[1:2].decode("utf-8", errors="ignore")
                 if index_str.isdigit():
                     index = int(index_str)
                     if self.active_favorite != index:
-                        _LOGGER.debug("Active index (0x30): %d", index)
+                        _LOGGER.debug("Active favorite (GF): %d", index)
                         self.active_favorite = index
                         changed = True
                     self._last_index_seen = index
                     self._flush_pending_slot(index)
+
+            # Header 0x30 without _pending_gf = PSF/ESF slot-save confirmation — ignore
+            elif header == 0x30 and len(data) >= 2:
+                _LOGGER.debug("Slot-save confirmation (ignoring as active-favorite): %s", data.decode("utf-8", errors="ignore"))
 
             # Header 0x07 is an ASCII name block
             elif header == 0x07:
@@ -469,7 +549,10 @@ class PyHatchBabyRestAsync:
             elif header == 0x01 and len(data) >= 13:
                 if len(data) >= 20:
                     parsed = self._decode_schedule_block(data)
-                    idx = self._egb_slot or self._last_index_seen
+                    if self._pending_egb_slots:
+                        idx = self._pending_egb_slots.popleft()
+                    else:
+                        idx = self._egb_slot or self._last_index_seen
                     if idx is not None:
                         slot_dict = self.schedules.setdefault(idx, {})
                         if any(slot_dict.get(k) != v for k, v in parsed.items()):
@@ -478,14 +561,17 @@ class PyHatchBabyRestAsync:
                             changed = True
                 else:
                     parsed = self._decode_config_block(data)
-                    idx = self._pgb_slot or self._last_index_seen
+                    if self._pending_pgb_slots:
+                        idx = self._pending_pgb_slots.popleft()
+                    else:
+                        idx = self._pgb_slot or self._last_index_seen
                     if idx is None:
                         if any(self._pending_slot.get(k) != v for k, v in parsed.items()):
                             self._pending_slot.update(parsed)
                     else:
                         slot_dict = self.favorites.setdefault(idx, {})
                         if any(slot_dict.get(k) != v for k, v in parsed.items()):
-                            _LOGGER.debug("Favorite config slot %s: %s", self._pgb_slot, parsed)
+                            _LOGGER.debug("Favorite config slot %s: %s", idx, parsed)
                             slot_dict.update(parsed)
                             changed = True
 
@@ -572,32 +658,39 @@ class PyHatchBabyRestAsync:
 
     async def refresh_data(self):
         """Refresh data from Hatch Rest device."""
-        if log_timing := _LOGGER.isEnabledFor(logging.DEBUG):
-            start = monotonic()
-            _LOGGER.debug("Started refresh_data at %s", datetime.now().isoformat())
+        async with self._send_lock:
+            if log_timing := _LOGGER.isEnabledFor(logging.DEBUG):
+                start = monotonic()
+                _LOGGER.debug("Started refresh_data at %s", datetime.now().isoformat())
 
-        self._set_active_operations(1)
-        await self._client_connect()
+            self._set_active_operations(1)
+            await self._client_connect()
 
-        try:
-            if self._client and self._client.is_connected:
-                raw_char_read = await self._client.read_gatt_char(CHAR_FEEDBACK)
-                _LOGGER.debug("Raw char read from refresh_data: %s", raw_char_read)
-                self._parse_data(raw_char_read)
-            else:
-                _LOGGER.warning("Could not refresh data: Not connected to device")
+            try:
+                if self._client and self._client.is_connected:
+                    # Request timer state explicitly
+                    await self._client.write_gatt_char(CHAR_TX, bytearray(b"GI"), response=True)
+                    await asyncio.sleep(0.1)
+                    await self._client.write_gatt_char(CHAR_TX, bytearray(b"GD"), response=True)
+                    await asyncio.sleep(0.1)
 
-        except (
-            BleakNotFoundError,
-            BleakOutOfConnectionSlotsError,
-            BleakAbortedError,
-            BleakConnectionError,
-            Exception,  # noqa: BLE001
-        ) as e:
-            _LOGGER.warning("Exception during refresh_data -- %r", e)
+                    raw_char_read = await self._client.read_gatt_char(CHAR_FEEDBACK)
+                    _LOGGER.debug("Raw char read from refresh_data: %s", raw_char_read)
+                    self._parse_data(raw_char_read)
+                else:
+                    _LOGGER.warning("Could not refresh data: Not connected to device")
 
-        self._set_active_operations(-1)
-        self._schedule_disconnect()
+            except (
+                BleakNotFoundError,
+                BleakOutOfConnectionSlotsError,
+                BleakAbortedError,
+                BleakConnectionError,
+                Exception,  # noqa: BLE001
+            ) as e:
+                _LOGGER.warning("Exception during refresh_data -- %r", e)
+
+            self._set_active_operations(-1)
+            self._schedule_disconnect()
 
         if log_timing:
             _LOGGER.debug(
@@ -610,7 +703,7 @@ class PyHatchBabyRestAsync:
         """Select a favorite by index (confirmed via btsnoop: SP activates, PSB only edits)."""
         command = f"SP{index:02X}"
         _LOGGER.debug("API command: select_favorite %d", index)
-        return await self._send_command(command)
+        return await self._send_command(command, response=True)
 
     async def save_to_favorite(self, index: int) -> None:
         """Save current device state to a favorite slot.
@@ -640,11 +733,12 @@ class PyHatchBabyRestAsync:
         _LOGGER.debug("API command: get_timer (GI)")
         await self._send_command("GI")
 
-    async def set_timer(self, minutes: int) -> None:
-        """Set a timer for the specified number of minutes."""
-        # SD{hex} — confirmed timer set command
-        command = f"SD{minutes:04X}"
-        _LOGGER.debug("API command: set_timer %s (%d min)", command, minutes)
+    async def set_timer(self, seconds: int) -> None:
+        """Set a timer for the specified number of seconds."""
+        command = f"SD{seconds:04X}"
+        _LOGGER.debug("API command: set_timer %s (%d sec)", command, seconds)
+        self.timer_total = seconds // 60
+        self._timer_expires_at = monotonic() + seconds
         await self._send_command(command)
 
     async def get_timer_remaining(self) -> None:
@@ -653,56 +747,69 @@ class PyHatchBabyRestAsync:
         await self._send_command("GD")
 
     async def toggle_favorite(self, index: int, enable: bool) -> None:
-        """Enable or disable a favorite slot."""
-        # PSL is enable/disable flag: 0xC0 = enabled, 0x80 = disabled
-        # Sequence: PSB{index} -> PSL{flag} -> PSF
+        """Enable or disable a favorite slot.
+
+        PSF commits ALL fields — must resend existing data alongside the new flag
+        or the slot gets wiped to defaults.
+        """
         flag = "C0" if enable else "80"
         _LOGGER.debug("API command: toggle_favorite slot=%d enable=%s", index, enable)
-        await self._send_commands([
-            f"PSB{index:02X}",
-            f"PSL{flag}",
-            "PSF",
-        ])
+        cached = self.favorites.get(index, {})
+        color = cached.get("color") or (0, 0, 0)
+        r, g, b = color
+        brightness = cached.get("brightness") or 0
+        sound_raw = cached.get("sound") or PyHatchBabyRestSound.none
+        sound = sound_raw.value if hasattr(sound_raw, "value") else int(sound_raw)
+        volume = cached.get("volume") or 0
+        await self._send_commands(
+            [
+                f"PSB{index:02X}",
+                f"PSC{r:02X}{g:02X}{b:02X}{brightness:02X}",
+                f"PSN{sound:02X}",
+                f"PSV{volume:02X}",
+                f"PSL{flag}",
+                "PSF",
+                f"PGB{index:02X}",
+            ],
+            pgb_slot=index,
+        )
 
     async def toggle_schedule(self, index: int, enable: bool) -> None:
         """Enable or disable a schedule slot."""
-        # ESL is likely the schedule version of PSL
-        # Sequence: ESB{index} -> ESL{flag} -> ESF
         flag = "C0" if enable else "80"
         _LOGGER.debug("API command: toggle_schedule slot=%d enable=%s", index, enable)
-        await self._send_commands([
-            f"ESB{index:02X}",
-            f"ESL{flag}",
-            "ESF",
-        ])
+        await self._send_commands(
+            [f"ESB{index:02X}", f"ESL{flag}", "ESF", f"EGB{index:02X}"],
+            egb_slot=index,
+        )
 
     async def turn_power_on(self):
         """Power on the Hatch Rest device."""
         command = f"SI{1:02x}"
         _LOGGER.debug("API command: turn_power_on")
         self.power = True
-        await self._send_command(command, response=False)
+        await self._send_command(command, response=True)
 
     async def turn_power_off(self):
         """Power off the Hatch Rest device."""
         command = f"SI{0:02x}"
         _LOGGER.debug("API command: turn_power_off")
         self.power = False
-        await self._send_command(command, response=False)
+        await self._send_command(command, response=True)
 
     async def set_sound(self, sound: int):
         """Set the sound of the Hatch Rest device."""
         command = f"SN{sound:02x}"
         _LOGGER.debug("API command: set_sound to %s", command)
         self.sound = PyHatchBabyRestSound(sound)
-        return await self._send_command(command, response=False)
+        return await self._send_command(command, response=True)
 
     async def set_volume(self, volume: int):
         """Set the volume of the Hatch Rest device."""
         command = f"SV{volume:02x}"
         _LOGGER.debug("API command: set_volume to %s", command)
         self.volume = volume
-        return await self._send_command(command, response=False)
+        return await self._send_command(command, response=True)
 
     async def set_color(self, red: int, green: int, blue: int):
         """Set the color of the Hatch Rest device."""
@@ -726,7 +833,7 @@ class PyHatchBabyRestAsync:
         if self.color is not None and self.brightness is not None:
             command = f"SC{self.color[0]:02x}{self.color[1]:02x}{self.color[2]:02x}{self.brightness:02x}"
             _LOGGER.debug("API command: set_light_state to %s", command)
-            return await self._send_command(command, response=False)
+            return await self._send_command(command, response=True)
         return None
 
     @property

@@ -144,32 +144,62 @@ class TestPyHatchBabyRestAsync:
         assert api.active_favorite == 0
 
     @pytest.mark.asyncio
+    async def test_refresh_data_sends_timer_commands(self, api: PyHatchBabyRestAsync):
+        """Test refresh_data sends GI and GD commands."""
+        raw_response = bytearray(20)
+
+        mock_client = AsyncMock()
+        mock_client.read_gatt_char = AsyncMock(return_value=raw_response)
+        mock_client.write_gatt_char = AsyncMock()
+        api._client = mock_client
+
+        with patch.object(api, "_client_connect", new_callable=AsyncMock):
+            with patch.object(api, "_client_disconnect", new_callable=AsyncMock):
+                await api.refresh_data()
+
+        mock_client.write_gatt_char.assert_any_call(CHAR_TX, bytearray(b"GI"), response=True)
+        mock_client.write_gatt_char.assert_any_call(CHAR_TX, bytearray(b"GD"), response=True)
+
+    def test_parse_config_data_gd_sets_timer_remaining(self, api: PyHatchBabyRestAsync):
+        """Test GD notification updates timer_remaining in seconds."""
+        api._parse_config_data(bytearray(b"0078"))  # 0x78 = 120 minutes
+        assert api.timer_remaining == 120
+
+    def test_parse_config_data_gi_ff_clears_timer(self, api: PyHatchBabyRestAsync):
+        """Test GI FF notification clears timer state."""
+        api.timer_total = 300
+        api.timer_remaining = 120
+        api._parse_config_data(bytearray(b"FF"))
+        assert api.timer_total is None
+        assert api.timer_remaining is None
+
+    @pytest.mark.asyncio
     async def test_turn_power_on(self, api: PyHatchBabyRestAsync):
         """Test turn_power_on sends correct command."""
         with patch.object(api, "_send_command", new_callable=AsyncMock) as mock_send:
             await api.turn_power_on()
-            mock_send.assert_called_once_with("SI01", response=False)
+            mock_send.assert_called_once_with("SI01", response=True)
 
     @pytest.mark.asyncio
     async def test_turn_power_off(self, api: PyHatchBabyRestAsync):
         """Test turn_power_off sends correct command."""
         with patch.object(api, "_send_command", new_callable=AsyncMock) as mock_send:
             await api.turn_power_off()
-            mock_send.assert_called_once_with("SI00", response=False)
+            mock_send.assert_called_once_with("SI00", response=True)
 
     @pytest.mark.asyncio
     async def test_set_sound(self, api: PyHatchBabyRestAsync):
         """Test set_sound sends correct command."""
         with patch.object(api, "_send_command", new_callable=AsyncMock) as mock_send:
             await api.set_sound(PyHatchBabyRestSound.rain)
-            mock_send.assert_called_once_with("SN07", response=False)  # rain = 7
+            mock_send.assert_called_once_with("SN07", response=True)  # rain = 7
 
     @pytest.mark.asyncio
     async def test_set_volume(self, api: PyHatchBabyRestAsync):
         """Test set_volume sends correct command."""
         with patch.object(api, "_send_command", new_callable=AsyncMock) as mock_send:
             await api.set_volume(128)
-            mock_send.assert_called_once_with("SV80", response=False)  # 128 in hex
+            mock_send.assert_called_once_with("SV80", response=True)  # 128 in hex
 
     @pytest.mark.asyncio
     async def test_set_color(self, api: PyHatchBabyRestAsync):
@@ -177,7 +207,7 @@ class TestPyHatchBabyRestAsync:
         api.brightness = 100
         with patch.object(api, "_send_command", new_callable=AsyncMock) as mock_send:
             await api.set_color(255, 128, 64)
-            mock_send.assert_called_once_with("SCff804064", response=False)
+            mock_send.assert_called_once_with("SCff804064", response=True)
 
     @pytest.mark.asyncio
     async def test_set_brightness(self, api: PyHatchBabyRestAsync):
@@ -185,7 +215,7 @@ class TestPyHatchBabyRestAsync:
         api.color = (255, 128, 64)
         with patch.object(api, "_send_command", new_callable=AsyncMock) as mock_send:
             await api.set_brightness(200)
-            mock_send.assert_called_once_with("SCff8040c8", response=False)  # 200 in hex = c8
+            mock_send.assert_called_once_with("SCff8040c8", response=True)  # 200 in hex = c8
 
     @pytest.mark.asyncio
     async def test_send_command_writes_to_characteristic(
@@ -212,14 +242,24 @@ class TestPyHatchBabyRestAsync:
         """Test select_favorite sends correct command."""
         with patch.object(api, "_send_command", new_callable=AsyncMock) as mock_send:
             await api.select_favorite(2)
-            mock_send.assert_called_once_with("SP02")
+            mock_send.assert_called_once_with("SP02", response=True)
+
+    @pytest.mark.asyncio
+    async def test_get_timer(self, api: PyHatchBabyRestAsync):
+        """Test get_timer sends correct command."""
+        with patch.object(api, "_send_command", new_callable=AsyncMock) as mock_send:
+            await api.get_timer()
+            mock_send.assert_called_once_with("GI")
 
     @pytest.mark.asyncio
     async def test_toggle_favorite(self, api: PyHatchBabyRestAsync):
         """Test toggle_favorite sends correct commands."""
         with patch.object(api, "_send_commands", new_callable=AsyncMock) as mock_send:
             await api.toggle_favorite(2, True)
-            mock_send.assert_called_once_with(["PSB02", "PSLC0", "PSF"])
+            mock_send.assert_called_once_with(
+                ["PSB02", "PSC00000000", "PSN00", "PSV00", "PSLC0", "PSF", "PGB02"],
+                pgb_slot=2,
+            )
 
     @pytest.mark.asyncio
     async def test_client_connect_syncs_clock(self, api: PyHatchBabyRestAsync):

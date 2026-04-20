@@ -6,11 +6,12 @@ import voluptuous as vol
 
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv, entity_platform
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .coordinator import HatchBabyRestEntity
+from .coordinator import HatchBabyRestEntity, HatchBabyRestUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -23,7 +24,17 @@ async def async_setup_entry(
     """Set up Hatch Rest switch."""
     coordinator = config_entry.runtime_data
     # only need to update_before_add on one entity -- switch is "master" entity
-    async_add_entities([HatchBabyRestSwitch(coordinator)], update_before_add=True)
+    entities = [HatchBabyRestSwitch(coordinator)]
+    
+    # Add favorite toggle switches
+    for i in range(1, 7):
+        entities.append(HatchBabyRestFavoriteEnabledSwitch(coordinator, i))
+    
+    # Add schedule toggle switches
+    for i in range(1, 11):
+        entities.append(HatchBabyRestScheduleEnabledSwitch(coordinator, i))
+
+    async_add_entities(entities, update_before_add=True)
 
     platform = entity_platform.async_get_current_platform()
     platform.async_register_entity_service(
@@ -100,3 +111,85 @@ class HatchBabyRestSwitch(HatchBabyRestEntity, SwitchEntity):  # pyright: ignore
         """Send a command to the device."""
         _LOGGER.debug("Service: send_command '%s' raw=%s", command, raw)
         await self._hatch_rest_device._send_command(command, raw=raw)
+
+
+class HatchBabyRestFavoriteEnabledSwitch(HatchBabyRestEntity, SwitchEntity):
+    """Hatch Rest favorite enabled switch."""
+
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator: HatchBabyRestUpdateCoordinator, index: int) -> None:
+        """Initialize the switch."""
+        super().__init__(coordinator)
+        self._index = index
+
+    @property
+    def name(self) -> str | None:
+        """Return the name of the entity."""
+        fav_info = self._hatch_rest_device.favorites.get(self._index, {})
+        base_name = fav_info.get("name", f"Favorite {self._index}")
+        if self._hatch_rest_device.name:
+            return f"{self._hatch_rest_device.name.title()} {base_name} Enabled"
+        return f"{base_name} Enabled"
+
+    @property
+    def unique_id(self) -> str | None:
+        """Return a unique ID."""
+        return f"{self._attr_unique_id}_favorite_{self._index}_enabled"
+
+    @property
+    def is_on(self) -> bool:
+        """Return true if favorite is enabled."""
+        fav_info = self._hatch_rest_device.favorites.get(self._index, {})
+        return fav_info.get("enabled", False)
+
+    async def async_turn_on(self, **kwargs) -> None:
+        """Enable the favorite."""
+        await self._hatch_rest_device.toggle_favorite(self._index, True)
+        await self.coordinator.async_refresh()
+
+    async def async_turn_off(self, **kwargs) -> None:
+        """Disable the favorite."""
+        await self._hatch_rest_device.toggle_favorite(self._index, False)
+        await self.coordinator.async_refresh()
+
+
+class HatchBabyRestScheduleEnabledSwitch(HatchBabyRestEntity, SwitchEntity):
+    """Hatch Rest schedule enabled switch."""
+
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator: HatchBabyRestUpdateCoordinator, index: int) -> None:
+        """Initialize the switch."""
+        super().__init__(coordinator)
+        self._index = index
+
+    @property
+    def name(self) -> str | None:
+        """Return the name of the entity."""
+        sched_info = self._hatch_rest_device.schedules.get(self._index, {})
+        base_name = sched_info.get("name", f"Schedule {self._index}")
+        if self._hatch_rest_device.name:
+            return f"{self._hatch_rest_device.name.title()} {base_name} Enabled"
+        return f"{base_name} Enabled"
+
+    @property
+    def unique_id(self) -> str | None:
+        """Return a unique ID."""
+        return f"{self._attr_unique_id}_schedule_{self._index}_enabled"
+
+    @property
+    def is_on(self) -> bool:
+        """Return true if schedule is enabled."""
+        sched_info = self._hatch_rest_device.schedules.get(self._index, {})
+        return sched_info.get("enabled", False)
+
+    async def async_turn_on(self, **kwargs) -> None:
+        """Enable the schedule."""
+        await self._hatch_rest_device.toggle_schedule(self._index, True)
+        await self.coordinator.async_refresh()
+
+    async def async_turn_off(self, **kwargs) -> None:
+        """Disable the schedule."""
+        await self._hatch_rest_device.toggle_schedule(self._index, False)
+        await self.coordinator.async_refresh()

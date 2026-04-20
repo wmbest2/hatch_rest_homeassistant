@@ -1,6 +1,6 @@
 """Hatch Rest coordinator."""
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 import logging
 
 from homeassistant.components import bluetooth
@@ -26,13 +26,14 @@ class HatchBabyRestUpdateCoordinator(DataUpdateCoordinator):
         hass: HomeAssistant,
         unique_id: str | None,
         hatch_rest_device: PyHatchBabyRestAsync,
+        update_interval: timedelta,
     ) -> None:
         """Initialize the coordinator."""
         super().__init__(
             hass,
             _LOGGER,
             name=DOMAIN,
-            update_interval=timedelta(hours=1),
+            update_interval=update_interval,
         )
         self.unique_id = unique_id
         self.hatch_rest_device = hatch_rest_device
@@ -71,16 +72,29 @@ class HatchBabyRestUpdateCoordinator(DataUpdateCoordinator):
 
     def get_current_data(
         self,
-    ) -> dict[str, int | tuple[int, int, int] | bool | PyHatchBabyRestSound | None]:
+    ) -> dict[str, int | tuple[int, int, int] | bool | PyHatchBabyRestSound | None | datetime]:
         """Get the current state of the Hatch Rest device."""
+        timer_expires_at = self.hatch_rest_device._timer_expires_at
+        timer_end_time = None
+        if timer_expires_at is not None:
+            # Convert monotonic time to UTC datetime
+            from homeassistant.util import dt as dt_util
+            from time import monotonic
+            
+            remaining = timer_expires_at - monotonic()
+            timer_end_time = dt_util.utcnow() + timedelta(seconds=remaining)
+
         data: dict[
-            str, int | tuple[int, int, int] | bool | PyHatchBabyRestSound | None
+            str, int | tuple[int, int, int] | bool | PyHatchBabyRestSound | None | datetime
         ] = {
             "brightness": self.hatch_rest_device.brightness,
             "color": self.hatch_rest_device.color,
             "power": self.hatch_rest_device.power,
             "sound": self.hatch_rest_device.sound,
             "volume": self.hatch_rest_device.volume,
+            "timer_total": self.hatch_rest_device.timer_total,
+            "timer_remaining": self.hatch_rest_device.timer_remaining,
+            "timer_end_time": timer_end_time,
         }
         _LOGGER.debug("Data updated: %s", data)
         return data

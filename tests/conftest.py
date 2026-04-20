@@ -81,6 +81,9 @@ def mock_hatch_api(mock_ble_device: BLEDevice) -> Generator[AsyncMock, None, Non
         mock_api.active_favorite = None
         mock_api.favorites = {}
         mock_api.schedules = {}
+        mock_api.timer_total = None
+        mock_api.timer_remaining = None
+        mock_api._timer_expires_at = None
         mock_api.select_favorite = AsyncMock()
 
         yield mock_api

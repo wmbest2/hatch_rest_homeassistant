@@ -5,6 +5,9 @@ from enum import IntEnum
 DOMAIN = "hatch_rest"
 MANUFACTURER_ID = 1076
 
+CONF_SCAN_INTERVAL = "scan_interval"
+DEFAULT_SCAN_INTERVAL = 10  # minutes
+
 COLOR_GRADIENT = (254, 254, 254)  # setting this color turns on Gradient mode
 CHAR_TX = "02240002-5efd-47eb-9c1a-de53f7a2b232"
 CHAR_LIST = "02240003-5efd-47eb-9c1a-de53f7a2b232"

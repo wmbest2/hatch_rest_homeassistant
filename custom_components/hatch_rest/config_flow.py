@@ -6,7 +6,7 @@ from typing import Any
 
 import voluptuous as vol
 
-from homeassistant import config_entries
+from homeassistant import config_entries, core
 from homeassistant.components.bluetooth import (
     BluetoothServiceInfoBleak,
     async_ble_device_from_address,
@@ -16,7 +16,7 @@ from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.const import CONF_ADDRESS, CONF_SENSOR_TYPE
 
 from .api import PyHatchBabyRestAsync
-from .const import DOMAIN, MANUFACTURER_ID
+from .const import CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL, DOMAIN, MANUFACTURER_ID
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -97,10 +97,25 @@ class HatchBabyRestConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._set_confirm_only()
         return self.async_show_form(
             step_id="bluetooth_confirm",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL
+                    ): vol.All(vol.Coerce(int), vol.Range(min=1, max=1440)),
+                }
+            ),
             description_placeholders={
                 "name": self.context["title_placeholders"]["name"]
             },
         )
+
+    @core.callback
+    @staticmethod
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> config_entries.OptionsFlow:
+        """Get the options flow for this handler."""
+        return HatchBabyRestOptionsFlowHandler(config_entry)
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -153,7 +168,14 @@ class HatchBabyRestConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         }
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema({vol.Required(CONF_ADDRESS): vol.In(titles)}),
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_ADDRESS): vol.In(titles),
+                    vol.Required(
+                        CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL
+                    ): vol.All(vol.Coerce(int), vol.Range(min=1, max=1440)),
+                }
+            ),
         )
 
     async def _async_create_entry_from_discovery(
@@ -168,4 +190,36 @@ class HatchBabyRestConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_ADDRESS: address,
                 CONF_SENSOR_TYPE: "switch",  # is this even required? I have other platforms supported
             },
+        )
+
+
+class HatchBabyRestOptionsFlowHandler(config_entries.OptionsFlow):
+    """Hatch Rest options flow handler."""
+
+    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+        """Initialize Hatch Rest options flow."""
+        self.config_entry = config_entry
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Manage the options."""
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_SCAN_INTERVAL,
+                        default=self.config_entry.options.get(
+                            CONF_SCAN_INTERVAL,
+                            self.config_entry.data.get(
+                                CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
+                            ),
+                        ),
+                    ): vol.All(vol.Coerce(int), vol.Range(min=1, max=1440)),
+                }
+            ),
         )

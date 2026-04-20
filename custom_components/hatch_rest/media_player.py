@@ -76,28 +76,19 @@ class HatchBabyRestMediaPlayer(HatchBabyRestEntity, MediaPlayerEntity):  # pyrig
     @property
     def source(self) -> str | None:  # pyright: ignore[reportIncompatibleVariableOverride]
         """Return the current source of the media player."""
-        active_fav = self.coordinator.hatch_rest_device.active_favorite
-        if active_fav:
-            fav_info = self.coordinator.hatch_rest_device.favorites.get(active_fav, {})
-            return fav_info.get("name", f"Favorite {active_fav}")
-            
         sound = self.coordinator.data.get("sound")
-        if sound:
+        if sound is None or sound == PyHatchBabyRestSound.none:
+            return None
+        if hasattr(sound, "name"):
             return sound.name.capitalize()
-        return None
+        return f"Unknown ({sound})"
 
     @property
     def source_list(self) -> list[str] | None:  # pyright: ignore[reportIncompatibleVariableOverride]
         """Return a list of available sources."""
-        sources = []
-        # Add Favorites first
-        for i in range(1, 7):
-            fav_info = self.coordinator.hatch_rest_device.favorites.get(i, {})
-            sources.append(fav_info.get("name", f"Favorite {i}"))
-        
-        # Add raw sounds
-        sources.extend([sound.name.capitalize() for sound in PyHatchBabyRestSound if sound.name != "none"])
-        return sources
+        favorites = [f"Favorite {i}" for i in range(1, 7)]
+        sounds = [sound.name.capitalize() for sound in PyHatchBabyRestSound if sound.name != "none"]
+        return favorites + sounds
 
     @property
     def state(self) -> MediaPlayerState | None:  # pyright: ignore[reportIncompatibleVariableOverride]
@@ -145,31 +136,28 @@ class HatchBabyRestMediaPlayer(HatchBabyRestEntity, MediaPlayerEntity):  # pyrig
     async def async_select_source(self, source: str) -> None:
         """Select a source from the list of available sources."""
         _LOGGER.debug("media_player selecting source: %s", source)
-        
-        # Check if it's a favorite (either by index name or custom name)
-        selected_index = None
-        for i in range(1, 7):
-            fav_info = self._hatch_rest_device.favorites.get(i, {})
-            if source == fav_info.get("name") or source == f"Favorite {i}":
-                selected_index = i
-                break
-        
-        if selected_index is not None:
-            _LOGGER.debug("media_player selecting favorite %d", selected_index)
-            await self._hatch_rest_device.select_favorite(selected_index)
-        else:
-            # Fallback to raw sound IDs
+
+        if source.startswith("Favorite "):
             try:
-                source_number = PyHatchBabyRestSound[source.lower()]
-                self._previous_sound = PyHatchBabyRestSound(source_number)
-                _LOGGER.debug(
-                    "media_player setting sound = %d (%s) ",
-                    source_number,
-                    PyHatchBabyRestSound(source_number).name,
-                )
-                await self._hatch_rest_device.set_sound(source_number)
-            except KeyError:
-                _LOGGER.error("Invalid source selected: %s", source)
+                index = int(source.split(" ")[1])
+                await self._hatch_rest_device.select_favorite(index)
+                await self.coordinator.async_refresh()
+                return
+            except (ValueError, IndexError):
+                _LOGGER.error("Invalid favorite source: %s", source)
+                return
+
+        try:
+            source_number = PyHatchBabyRestSound[source.lower()]
+            self._previous_sound = PyHatchBabyRestSound(source_number)
+            _LOGGER.debug(
+                "media_player setting sound = %d (%s) ",
+                source_number,
+                PyHatchBabyRestSound(source_number).name,
+            )
+            await self._hatch_rest_device.set_sound(source_number)
+        except KeyError:
+            _LOGGER.error("Invalid source selected: %s", source)
 
         # https://developers.home-assistant.io/docs/integration_fetching_data/
         # If this method is used on a coordinator that polls, it will reset the time until the next time it will poll for data.
