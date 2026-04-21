@@ -1,12 +1,12 @@
 """Hatch Rest coordinator."""
 
-import asyncio
 from datetime import datetime, timedelta
 import logging
 
 from homeassistant.components import bluetooth
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
@@ -42,7 +42,7 @@ class HatchBabyRestUpdateCoordinator(DataUpdateCoordinator):
             str, int | tuple[int, int, int] | bool | PyHatchBabyRestSound | None | datetime
         ] = {}
 
-        self._refresh_timer: asyncio.TimerHandle | None = None
+        self._refresh_timer = None
         self._advertisement_hint: bool = False
 
         # Register callback for real-time updates from connections
@@ -83,12 +83,15 @@ class HatchBabyRestUpdateCoordinator(DataUpdateCoordinator):
     def _schedule_deep_refresh(self) -> None:
         """Schedule a deep refresh after a debounce period."""
         if self._refresh_timer:
-            self._refresh_timer.cancel()
+            self._refresh_timer()
+            self._refresh_timer = None
+
+        @callback
+        def _fire(_now):
+            self.hass.async_create_task(self._debounced_refresh())
 
         # 10s debounce to let manual/app changes settle before HA connects
-        self._refresh_timer = self.hass.loop.call_later(
-            10, lambda: self.hass.async_create_task(self._debounced_refresh())
-        )
+        self._refresh_timer = async_call_later(self.hass, 10, _fire)
         _LOGGER.debug("Scheduled debounced deep refresh in 10s")
 
     async def _debounced_refresh(self) -> None:

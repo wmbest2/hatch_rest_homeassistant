@@ -115,7 +115,7 @@ class HatchBabyRestConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         config_entry: config_entries.ConfigEntry,
     ) -> config_entries.OptionsFlow:
         """Get the options flow for this handler."""
-        return HatchBabyRestOptionsFlowHandler(config_entry)
+        return HatchBabyRestOptionsFlowHandler()
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -195,10 +195,6 @@ class HatchBabyRestConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 class HatchBabyRestOptionsFlowHandler(config_entries.OptionsFlow):
     """Hatch Rest options flow handler."""
-
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        """Initialize Hatch Rest options flow."""
-        self.config_entry = config_entry
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
